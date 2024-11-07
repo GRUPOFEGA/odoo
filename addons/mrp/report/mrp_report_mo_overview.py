@@ -312,7 +312,6 @@ class ReportMoOverview(models.AbstractModel):
                 'level': level,
                 'index': f"{current_index}W{index}",
                 'model': workorder._name,
-                'id': workorder.id,
                 'name': workorder.name,
                 'state': workorder.state,
                 'formatted_state': self._format_state(workorder),
