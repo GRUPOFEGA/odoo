@@ -81,7 +81,7 @@ class ReportMoOverview(models.AbstractModel):
         summary = self._get_mo_summary(production, components, initial_mo_cost, initial_real_cost, remaining_cost_share)
         extra_lines = self._get_report_extra_lines(summary, components, operations, production.state == 'done')
         return {
-            'id': production.id,
+            
             'name': production.display_name,
             'summary': summary,
             'components': components,
