@@ -348,7 +348,6 @@ class ReportMoOverview(models.AbstractModel):
             'details': operations,
         }
 
-    
 
     def _compute_cost_sums(self, components, operations=False):
         total_mo_cost = total_real_cost = 0
