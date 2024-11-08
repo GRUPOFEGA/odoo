@@ -2898,9 +2898,9 @@ class Selection(Field):
         return super(Selection, self).convert_to_column(value, record, values, validate)
 
     def convert_to_cache(self, value, record, validate=True):
-        if not validate or self._selection is None:
+        if not validate:
             return value or None
-        if value in self._selection:
+        if value in self.get_values(record.env):
             return value
         if not value:
             return None
