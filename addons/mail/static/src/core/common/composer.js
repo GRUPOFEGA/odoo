@@ -29,6 +29,7 @@ import { _t } from "@web/core/l10n/translation";
 import { useService } from "@web/core/utils/hooks";
 import { FileUploader } from "@web/views/fields/file_handler";
 import { escape, sprintf } from "@web/core/utils/strings";
+import { isMobileOS } from "@web/core/browser/feature_detection";
 
 const EDIT_CLICK_TYPE = {
     CANCEL: "cancel",
@@ -86,6 +87,7 @@ export class Composer extends Component {
 
     setup() {
         super.setup();
+        this.isMobileOS = isMobileOS();
         this.SEND_KEYBIND_TO_SEND = markup(
             _t("<samp>%(send_keybind)s</samp><i> to send</i>", { send_keybind: this.sendKeybind })
         );
@@ -192,7 +194,13 @@ export class Composer extends Component {
                 }
             },
             pickers: { emoji: (emoji) => this.addEmoji(emoji) },
-            position: this.props.mode === "extended" ? "bottom-start" : "top-end",
+            position:
+                this.props.mode === "extended"
+                    ? "bottom-start"
+                    : this.props.composer.message
+                    ? "bottom-start"
+                    : "top-end",
+            fixed: !this.props.composer.message,
         };
     }
 
@@ -297,6 +305,10 @@ export class Composer extends Component {
             (!this.props.composer.text && attachments.length === 0) ||
             attachments.some(({ uploading }) => Boolean(uploading))
         );
+    }
+
+    get hasSendButtonNonEditing() {
+        return !this.extended;
     }
 
     get hasSuggestions() {
@@ -519,21 +531,23 @@ export class Composer extends Component {
         };
         const options = {
             onClose: (...args) => {
-                // args === [] : click on 'X'
+                // args === [] : click on 'X' or press escape
                 // args === { special: true } : click on 'discard'
-                const isDiscard = args.length === 0 || args[0]?.special;
+                const accidentalDiscard = args.length === 0;
+                const isDiscard = accidentalDiscard || args[0]?.special;
                 // otherwise message is posted (args === [undefined])
                 if (!isDiscard && this.props.composer.thread.model === "mail.box") {
                     this.notifySendFromMailbox();
                 }
-                if (
-                    args.length === 0 &&
-                    document
-                        .querySelector(".o_mail_composer_form_view .note-editable")
-                        .innerText.replace(/^\s*$/gm, "")
-                ) {
-                    this.saveContent();
-                    this.restoreContent();
+                if (accidentalDiscard) {
+                    const editor = document.querySelector(
+                        ".o_mail_composer_form_view .note-editable"
+                    );
+                    const editorIsEmpty = !editor || !editor.innerText.replace(/^\s*$/gm, "");
+                    if (!editorIsEmpty) {
+                        this.saveContent();
+                        this.restoreContent();
+                    }
                 } else {
                     this.clear();
                 }
@@ -567,9 +581,13 @@ export class Composer extends Component {
     async processMessage(cb) {
         const el = this.ref.el;
         const attachments = this.props.composer.attachments;
-        if (
+        if (attachments.some(({ uploading }) => uploading)) {
+            this.env.services.notification.add(_t("Please wait while the file is uploading."), {
+                type: "warning",
+            });
+        } else if (
             this.props.composer.text.trim() ||
-            (attachments.length > 0 && attachments.every(({ uploading }) => !uploading)) ||
+            attachments.length > 0 ||
             (this.message && this.message.attachments.length > 0)
         ) {
             if (!this.state.active) {
@@ -583,10 +601,6 @@ export class Composer extends Component {
             this.clear();
             this.state.active = true;
             el.focus();
-        } else if (attachments.some(({ uploading }) => Boolean(uploading))) {
-            this.env.services.notification.add(_t("Please wait while the file is uploading."), {
-                type: "warning",
-            });
         }
     }
 
@@ -676,6 +690,16 @@ export class Composer extends Component {
         const composer = toRaw(this.props.composer);
         composer.isFocused = true;
         composer.thread?.markAsRead();
+    }
+
+    onFocusout(ev) {
+        if (
+            [EDIT_CLICK_TYPE.CANCEL, EDIT_CLICK_TYPE.SAVE].includes(ev.relatedTarget?.dataset?.type)
+        ) {
+            // Edit or Save most likely clicked: early return as to not re-render (which prevents click)
+            return;
+        }
+        this.props.composer.isFocused = false;
     }
 
     saveContent() {

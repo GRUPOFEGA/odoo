@@ -41,11 +41,11 @@ class RequestUID(object):
 
 
 class ModelConverter(werkzeug.routing.BaseConverter):
+    regex = r'[0-9]+'
 
     def __init__(self, url_map, model=False):
-        super(ModelConverter, self).__init__(url_map)
+        super().__init__(url_map)
         self.model = model
-        self.regex = r'([0-9]+)'
 
     def to_python(self, value):
         _uid = RequestUID(value=value, converter=self)
@@ -57,12 +57,11 @@ class ModelConverter(werkzeug.routing.BaseConverter):
 
 
 class ModelsConverter(werkzeug.routing.BaseConverter):
+    regex = r'[0-9,]+'
 
     def __init__(self, url_map, model=False):
-        super(ModelsConverter, self).__init__(url_map)
+        super().__init__(url_map)
         self.model = model
-        # TODO add support for slug in the form [A-Za-z0-9-] bla-bla-89 -> id 89
-        self.regex = r'([0-9,]+)'
 
     def to_python(self, value):
         _uid = RequestUID(value=value, converter=self)
@@ -159,7 +158,7 @@ class IrHttp(models.AbstractModel):
     def _authenticate_explicit(cls, auth):
         try:
             if request.session.uid is not None:
-                if not security.check_session(request.session, request.env):
+                if not security.check_session(request.session, request.env, request):
                     request.session.logout(keep_db=True)
                     request.env = api.Environment(request.env.cr, None, request.session.context)
             getattr(cls, f'_auth_method_{auth}')()
@@ -172,6 +171,10 @@ class IrHttp(models.AbstractModel):
     @classmethod
     def _geoip_resolve(cls):
         return request._geoip_resolve()
+
+    @classmethod
+    def _sanitize_cookies(cls, cookies):
+        pass
 
     @classmethod
     def _pre_dispatch(cls, rule, args):
@@ -318,4 +321,4 @@ class IrHttp(models.AbstractModel):
 
     @classmethod
     def _is_allowed_cookie(cls, cookie_type):
-        return True
+        return True if cookie_type == 'required' else bool(request.env.user)

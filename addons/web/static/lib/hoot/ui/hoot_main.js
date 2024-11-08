@@ -1,7 +1,7 @@
 /** @odoo-module */
 
-import { Component, onMounted, useRef, useState, xml } from "@odoo/owl";
-import { createURL } from "../core/url";
+import { Component, useState, xml } from "@odoo/owl";
+import { createUrl } from "../core/url";
 import { useWindowListener } from "../hoot_utils";
 import { HootButtons } from "./hoot_buttons";
 import { HootConfigDropdown } from "./hoot_config_dropdown";
@@ -44,14 +44,18 @@ export class HootMain extends Component {
 
     static template = xml`
         <t t-if="env.runner.config.headless">
-            Running in headless mode
-            <a class="text-primary hoot-link" t-att-href="createURL({ headless: null })">
-                Run with UI
-            </a>
+            <div class="absolute bottom-0 start-1/2 -translate-x-1/2
+                flex z-4 mb-4 px-4 py-2 gap-2 whitespace-nowrap
+                text-xl rounded-full shadow bg-gray-200 dark:bg-gray-800"
+            >
+                Running in headless mode
+                <a class="text-primary hoot-link" t-att-href="createUrl({ headless: null })">
+                    Run with UI
+                </a>
+            </div>
         </t>
         <t t-else="">
             <main
-                t-ref="root"
                 class="${HootMain.name} flex flex-col w-full h-full bg-base relative"
                 t-att-class="{ 'hoot-animations': env.runner.config.fun }"
             >
@@ -83,7 +87,7 @@ export class HootMain extends Component {
         </t>
     `;
 
-    createURL = createURL;
+    createUrl = createUrl;
     escapeKeyPresses = 0;
 
     setup() {
@@ -92,51 +96,22 @@ export class HootMain extends Component {
             debugTest: null,
         });
 
-        if (!runner.config.headless) {
-            // Since Chrome 125 and for God knows why the "pointer" event listeners
-            // are all ignored in the HOOT UI, so the buttons appearing on hover
-            // are never displayed.
-            //
-            // Now for some reason adding a SINGLE listener on ANY button seems
-            // to solve this issue. I've looked into it for hours already and this
-            // is as far as I'll go on this matter. Good luck to anyone trying to
-            // debug this mess.
-            const unstuckListeners = () => {
-                if (listenersUnstuck || !rootRef.el) {
-                    return;
-                }
-                listenersUnstuck = true;
-                rootRef.el.querySelector("button").addEventListener(
-                    "pointerenter",
-                    () => {
-                        // Leave this empty (CALLBACK CANNOT BE NULL OR UNDEFINED)
-                    },
-                    { once: true }
-                );
-            };
+        runner.beforeAll(() => {
+            if (!runner.debug) {
+                return;
+            }
+            if (runner.debug === true) {
+                this.state.debugTest = runner.state.tests[0];
+            } else {
+                this.state.debugTest = runner.debug;
+            }
+        });
+        runner.afterAll(() => {
+            this.state.debugTest = null;
+        });
 
-            const rootRef = useRef("root");
-            let listenersUnstuck = false;
-
-            runner.beforeAll(() => {
-                if (!runner.debug) {
-                    return;
-                }
-                if (runner.debug === true) {
-                    this.state.debugTest = runner.state.tests[0];
-                } else {
-                    this.state.debugTest = runner.debug;
-                }
-            });
-            runner.afterAll(() => {
-                this.state.debugTest = null;
-
-                unstuckListeners();
-            });
-
-            onMounted(unstuckListeners);
-            useWindowListener("keydown", (ev) => this.onWindowKeyDown(ev), { capture: true });
-        }
+        useWindowListener("keydown", (ev) => this.onWindowKeyDown(ev), { capture: true });
+        useWindowListener("resize", (ev) => this.onWindowResize(ev));
     }
 
     /**
@@ -173,5 +148,9 @@ export class HootMain extends Component {
                 break;
             }
         }
+    }
+
+    onWindowResize() {
+        this.env.runner.checkPresetForViewPort();
     }
 }

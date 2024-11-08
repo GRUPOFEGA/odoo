@@ -5,7 +5,6 @@ import {
     queryAll,
     queryAllTexts,
     queryFirst,
-    queryLast,
     queryOne,
 } from "@odoo/hoot-dom";
 import { Deferred, animationFrame, mockTimeZone, runAllTimers } from "@odoo/hoot-mock";
@@ -270,6 +269,71 @@ test("New record with a o2m also with 2 new records, ordered, and resequenced", 
     expect.verifySteps(["onchange partner"]);
 });
 
+test("resequence with NULL value", async () => {
+    mockService("action", {
+        doActionButton(params) {
+            params.onClose();
+        },
+    });
+    Partner._records.push(
+        { id: 10, int_field: 1 },
+        { id: 11, int_field: 2 },
+        { id: 12, int_field: 3 },
+        { id: 13 }
+    );
+    Partner._records[0].p = [10, 11, 12, 13];
+
+    const serverValues = {
+        10: 1,
+        11: 2,
+        12: 3,
+        13: false,
+    };
+
+    onRpc("web_read", function ({ parent }) {
+        const res = parent();
+        const getServerValue = (record) =>
+            serverValues[record.id] === false ? Number.MAX_SAFE_INTEGER : serverValues[record.id];
+
+        // when sorted, NULL values are last
+        res[0].p.sort((a, b) => getServerValue(a) - getServerValue(b));
+        return res;
+    });
+
+    onRpc("web_save", ({ args }) => {
+        args[1].p.forEach(([cmd, id, values]) => {
+            serverValues[id] = values.int_field;
+        });
+    });
+
+    await mountView({
+        type: "form",
+        resModel: "partner",
+        resId: 1,
+        arch: `
+            <form>
+                <sheet><div name="button_box">
+                    <button name="reload" class="reload" type="object" string="Confirm"/>
+                </div></sheet>
+                <field name="foo"/>
+                <field name="p">
+                    <tree editable="bottom" default_order="int_field">
+                        <field name="int_field" widget="handle"/>
+                        <field name="id"/>
+                    </tree>
+                </field>
+            </form>`,
+    });
+
+    expect(queryAllTexts(".o_field_cell[name=id]")).toEqual(["10", "11", "12", "13"]);
+
+    await contains("tbody tr:nth-child(4) .o_handle_cell").dragAndDrop("tbody tr:nth-child(3)");
+    expect(queryAllTexts(".o_field_cell[name=id]")).toEqual(["10", "11", "13", "12"]);
+
+    await contains("button.reload").click();
+    expect(queryAllTexts(".o_field_cell[name=id]")).toEqual(["10", "11", "13", "12"]);
+});
+
 test.tags("desktop")("one2many in a list x2many editable use the right context", async () => {
     onRpc("name_create", (args) => {
         expect.step(`name_create ${args.kwargs.context.my_context}`);
@@ -403,7 +467,7 @@ test("O2M List with pager, decoration and default_order: add and cancel adding",
     });
 
     // Cancel Creation
-    press("escape");
+    await press("escape");
     await animationFrame();
     expect(".o_field_x2many_list .o_data_row").toHaveCount(1);
 });
@@ -681,7 +745,7 @@ test("one2many list editable with cell readonly modifier", async () => {
     });
 
     // Simulating a TAB key
-    press("Tab");
+    await press("Tab");
     await animationFrame();
     await contains(".o_selected_row [name=qux] input").edit(9, { confirm: false });
     await contains(".o_selected_row [name=qux] input").edit(99);
@@ -3762,7 +3826,7 @@ test.tags("desktop")("one2many list (editable): edition, part 4", async () => {
 
     // add a value in the turtle_trululu field to trigger an onchange
     await clickFieldDropdown("turtle_trululu");
-    press("Enter");
+    await press("Enter");
     await animationFrame();
     expect(".o_data_row textarea").toHaveValue("Some Description");
 });
@@ -4172,7 +4236,7 @@ test("pressing enter in a o2m with a required empty field", async () => {
 
     // edit mode, then click on Add an item, then press enter
     await contains(".o_field_x2many_list_row_add a").click();
-    press("Enter");
+    await press("Enter");
     await animationFrame();
     expect('div[name="turtle_foo"]').toHaveClass("o_field_invalid");
     expect.verifySteps(["get_views", "web_read", "onchange"]);
@@ -4198,19 +4262,19 @@ test("pressing enter several times in a one2many", async () => {
     expect(".o_data_row:eq(0)").toHaveClass("o_selected_row");
 
     await contains("[name='turtle_foo'] input").edit("a", { confirm: false });
-    press("Enter");
+    await press("Enter");
     await animationFrame();
     expect(".o_data_row").toHaveCount(2);
     expect(".o_data_row:eq(1)").toHaveClass("o_selected_row");
 
     await contains("[name='turtle_foo'] input").edit("a", { confirm: false });
-    press("Enter");
+    await press("Enter");
     await animationFrame();
     expect(".o_data_row").toHaveCount(3);
     expect(".o_data_row:eq(2)").toHaveClass("o_selected_row");
 
     // this is a weird case, but there's no required fields, so the record is already valid, we can press Enter directly.
-    press("Enter");
+    await press("Enter");
     await animationFrame();
     expect(".o_data_row").toHaveCount(4);
     expect(".o_data_row:eq(3)").toHaveClass("o_selected_row");
@@ -4235,7 +4299,7 @@ test("creating a new line in an o2m with an handle field does not focus the hand
     await contains(".o_field_x2many_list_row_add a").click();
     expect("[name='turtle_foo'] input").toBeFocused();
 
-    press("Enter");
+    await press("Enter");
     await animationFrame();
     expect("[name='turtle_foo'] input").toBeFocused();
 });
@@ -4309,7 +4373,7 @@ test("editable o2m, pressing ESC discard current changes", async () => {
     await contains(".o_field_x2many_list_row_add a").click();
     expect("tr.o_data_row").toHaveCount(1);
 
-    press("Escape");
+    await press("Escape");
     await animationFrame();
     expect("tr.o_data_row").toHaveCount(0);
     expect.verifySteps(["get_views", "web_read", "onchange"]);
@@ -4337,7 +4401,7 @@ test("editable o2m with required field, pressing ESC discard current changes", a
     await contains(".o_field_x2many_list_row_add a").click();
     expect("tr.o_data_row").toHaveCount(1);
 
-    press("Escape");
+    await press("Escape");
     await animationFrame();
     expect("tr.o_data_row").toHaveCount(0);
     expect.verifySteps(["get_views", "web_read", "onchange"]);
@@ -4374,7 +4438,7 @@ test("pressing escape in editable o2m list in dialog", async () => {
 
     expect(".modal .o_data_row.o_selected_row").toHaveCount(1);
 
-    press("Escape");
+    await press("Escape");
     await animationFrame();
     expect(".modal").toHaveCount(1);
     expect(".modal .o_data_row").toHaveCount(0);
@@ -4920,7 +4984,7 @@ test.tags("desktop")("one2many list with inline form view", async () => {
 
     // write in the many2one field, value = 37 (xphone)
     await clickFieldDropdown("product_id");
-    press("Enter");
+    await press("Enter");
     await animationFrame();
 
     // write in the integer field
@@ -5360,7 +5424,7 @@ test.tags("desktop")("one2many with many2many widget: create", async () => {
     });
     await contains('.modal .o_field_widget[name="turtle_int"] input').edit(50, { confirm: false });
     await clickFieldDropdown("product_id");
-    press("Enter");
+    await press("Enter");
     await animationFrame();
 
     await contains(".modal-footer button").click();
@@ -5447,7 +5511,7 @@ test.tags("desktop")("one2many with many2many widget: edition", async () => {
     // edit the first one2many record
     await contains(".o_data_cell:eq(0)").click();
     await clickFieldDropdown("product_id");
-    press("Enter");
+    await press("Enter");
     await animationFrame();
     await contains(".modal .o_form_button_save").click();
 
@@ -5460,7 +5524,7 @@ test.tags("desktop")("one2many with many2many widget: edition", async () => {
     // edit the second one2many record
     await contains(".o_data_row:eq(1) .o_data_cell:eq(0)").click();
     await clickFieldDropdown("product_id");
-    press("Enter");
+    await press("Enter");
     await animationFrame();
     await contains(".modal .modal-footer button:first:eq(0)").click();
 
@@ -6671,7 +6735,7 @@ test("focusing fields in one2many list", async () => {
     await contains(".o_data_row td").click();
     expect('[name="turtle_foo"] input').toBeFocused();
 
-    press("Tab");
+    await press("Tab");
     await animationFrame();
     expect('[name="turtle_int"] input').toBeFocused();
 });
@@ -7069,7 +7133,7 @@ test.tags("desktop")("one2many list editable: add new line before onchange retur
     def = new Deferred();
     expect(".o_data_row").toHaveCount(1);
     await clickFieldDropdown("turtle_trululu");
-    press("Enter");
+    await press("Enter");
     await animationFrame();
 
     // try to add a second line and check that it is correctly waiting
@@ -7634,7 +7698,7 @@ test("editing tabbed one2many (editable=bottom)", async () => {
     });
     await contains(".o_field_x2many_list_row_add a").click();
     expect("tr.o_data_row").toHaveCount(41);
-    expect(queryLast("tr.o_data_row")).toHaveClass("o_selected_row");
+    expect("tr.o_data_row:last").toHaveClass("o_selected_row");
 
     await contains('.o_data_row [name="turtle_foo"] input').edit("rainbow dash", {
         confirm: false,
@@ -7805,7 +7869,7 @@ test.tags("desktop")("focus is correctly reset after an onchange in an x2many", 
     expect(".o_field_widget[name=qux] input").toBeFocused();
 
     await clickFieldDropdown("trululu");
-    press("Enter");
+    await press("Enter");
     await animationFrame();
     expect(".o_field_widget[name=trululu] input").toHaveValue("first record");
 });
@@ -8775,7 +8839,7 @@ test("o2m add a line custom control create editable", async () => {
         '.o_field_widget[name="p"] .o_selected_row .o_field_widget[name="name"] input'
     ).toBeFocused();
 
-    press("Enter");
+    await press("Enter");
     await animationFrame();
     expect(queryAllTexts(".o_data_cell")).toEqual(["", "pizza", ""]);
 
@@ -9097,7 +9161,7 @@ test.tags("desktop")("create and edit on m2o in o2m, and press ESCAPE", async ()
 
     expect(".modal .o_form_view").toHaveCount(1);
 
-    press("Escape");
+    await press("Escape");
     await animationFrame();
 
     expect(".modal .o_form_view").toHaveCount(0);
@@ -9162,7 +9226,7 @@ test("one2many shortcut tab should not crash when there is no input widget", asy
     await contains("[name=turtle_foo]:eq(2)").click();
 
     expect("[name=turtle_foo] textarea").toBeFocused();
-    press("tab");
+    await press("tab");
     await animationFrame();
 
     expect(queryAllTexts(".o_field_text")).toEqual(["blip", "ninja", ""]);
@@ -9202,7 +9266,7 @@ test("o2m add a line custom control create editable with 'tab'", async () => {
     await contains("[name=turtle_foo]").click();
     expect(".o_data_row").toHaveCount(1);
 
-    press("Tab");
+    await press("Tab");
     await animationFrame();
     expect(".o_data_row").toHaveCount(2);
     expect.verifySteps(["onchange"]);
@@ -10936,9 +11000,9 @@ test("when Navigating to a one2many with tabs, the button add a line receives th
     await contains("[name=qux] input").click();
     expect("[name=qux] input").toBeFocused();
     // next tabable element is notebook tab
-    press("Tab");
+    await press("Tab");
     // go inside one2many
-    press("Tab");
+    await press("Tab");
     await animationFrame();
     expect(".o_field_x2many_list_row_add a").toBeFocused();
 });
@@ -10976,16 +11040,16 @@ test("Navigate to a one2many with tab then tab again focus the next field", asyn
     await contains("[name=qux] input").click();
     expect("[name=qux] input").toBeFocused();
     // next tabable element is notebook tab
-    press("Tab");
+    await press("Tab");
     // go inside one2many
-    press("Tab");
+    await press("Tab");
     await animationFrame();
 
     expect(".o_field_x2many_list_row_add a").toBeFocused();
     expect("[name=turtles] .o_selected_row").toHaveCount(0);
     // trigger Tab event and check that the default behavior can happen.
     expect(getNextFocusableElement()).toBe(queryOne("[name=foo] input"));
-    press("Tab");
+    await press("Tab");
     expect("[name=foo] input").toBeFocused();
 });
 
@@ -11022,9 +11086,9 @@ test("when Navigating to a one2many with tabs, not filling any field and hitting
     await contains("[name=qux] input").click();
     expect("[name=qux] input").toBeFocused();
     // next tabable element is notebook tab
-    press("Tab");
+    await press("Tab");
     // go inside one2many
-    press("Tab");
+    await press("Tab");
     await animationFrame();
 
     expect(".o_field_x2many_list_row_add a").toBeFocused();
@@ -11033,13 +11097,13 @@ test("when Navigating to a one2many with tabs, not filling any field and hitting
     await contains(".o_field_x2many_list_row_add a").click();
     expect("[name=turtle_foo] input").toBeFocused();
 
-    press("Tab"); // go to turtle_description field
+    await press("Tab"); // go to turtle_description field
     await animationFrame();
     expect("[name=turtle_description] textarea").toBeFocused();
 
     expect(getNextFocusableElement()).toBe(queryOne("[name=foo] input"));
     // trigger Tab event and check that the default behavior can happen.
-    press("Tab");
+    await press("Tab");
     expect("[name=foo] input").toBeFocused();
 });
 
@@ -11081,16 +11145,16 @@ test("when Navigating to a one2many with tabs, editing in a popup, the popup sho
     await contains("[name=qux] input").click();
     expect("[name=qux] input").toBeFocused();
     // next tabable element is notebook tab
-    press("Tab");
+    await press("Tab");
     // go inside one2many
-    press("Tab");
+    await press("Tab");
     await animationFrame();
     expect(".o_field_x2many_list_row_add a").toBeFocused();
 
     await contains(".o_field_x2many_list_row_add a").click();
     expect(".modal [name=turtle_foo] input").toBeFocused();
 
-    press("Escape");
+    await press("Escape");
     await animationFrame();
 
     expect(".modal").toHaveCount(0);
@@ -11133,23 +11197,26 @@ test.tags("desktop")(
             confirm: false,
         });
         await runAllTimers();
-        clickFieldDropdownItem("turtle_trululu", "Create and edit...");
 
-        press("Escape");
+        // Discard input value
+        press("Escape").then(() => {
+            // ... then discard record
+            press("Escape");
+        });
+        clickFieldDropdownItem("turtle_trululu", "Create and edit..."); // Open create modal
         await animationFrame();
         await animationFrame();
+
         expect(".modal").toHaveCount(0);
         expect(".o_selected_row").toHaveCount(0);
     }
 );
 
-test.tags("desktop")(
-    "navigating through an editable list with custom controls [REQUIRE FOCUS]",
-    async () => {
-        await mountView({
-            type: "form",
-            resModel: "partner",
-            arch: `
+test.tags("desktop")("navigating through an editable list with custom controls", async () => {
+    await mountView({
+        type: "form",
+        resModel: "partner",
+        arch: `
                 <form>
                     <field name="name"/>
                     <field name="p">
@@ -11163,38 +11230,37 @@ test.tags("desktop")(
                     </field>
                     <field name="int_field"/>
                 </form>`,
-        });
+    });
 
-        expect("[name=name] input").toBeFocused();
+    expect("[name=name] input").toBeFocused();
 
-        expect("[name=p] .o_selected_row").toHaveCount(0);
+    expect("[name=p] .o_selected_row").toHaveCount(0);
 
-        // press tab to navigate to the list
-        expect(getNextFocusableElement()).toBe(queryFirst(".o_field_x2many_list_row_add a"));
-        press("Tab");
+    // press tab to navigate to the list
+    expect(getNextFocusableElement()).toBe(queryFirst(".o_field_x2many_list_row_add a"));
+    await press("Tab");
 
-        expect(".o_field_x2many_list_row_add a:eq(0)").toBeFocused();
+    expect(".o_field_x2many_list_row_add a:eq(0)").toBeFocused();
 
-        // press right to focus the second control
-        press("ArrowRight");
-        await animationFrame();
+    // press right to focus the second control
+    await press("ArrowRight");
+    await animationFrame();
 
-        expect(".o_field_x2many_list_row_add a:eq(1)").toBeFocused();
+    expect(".o_field_x2many_list_row_add a:eq(1)").toBeFocused();
 
-        // press left to come back to first control
-        press("ArrowLeft");
-        await animationFrame();
+    // press left to come back to first control
+    await press("ArrowLeft");
+    await animationFrame();
 
-        expect(".o_field_x2many_list_row_add a:eq(0)").toBeFocused();
-        expect(getNextFocusableElement()).toBe(queryOne(".o_field_x2many_list_row_add a:eq(1)"));
-        press("Tab");
-        expect(".o_field_x2many_list_row_add a:eq(1)").toBeFocused();
+    expect(".o_field_x2many_list_row_add a:eq(0)").toBeFocused();
+    expect(getNextFocusableElement()).toBe(queryOne(".o_field_x2many_list_row_add a:eq(1)"));
+    await press("Tab");
+    expect(".o_field_x2many_list_row_add a:eq(1)").toBeFocused();
 
-        expect(getNextFocusableElement()).toBe(queryOne("[name=int_field] input"));
-        press("Tab");
-        expect("[name=int_field] input").toBeFocused();
-    }
-);
+    expect(getNextFocusableElement()).toBe(queryOne("[name=int_field] input"));
+    await press("Tab");
+    expect("[name=int_field] input").toBeFocused();
+});
 
 test("be able to press a key on the keyboard when focusing a column header without crashing", async () => {
     await mountView({
@@ -11212,7 +11278,7 @@ test("be able to press a key on the keyboard when focusing a column header witho
     });
     await contains(".o_data_row .o_data_cell").click();
     await contains(".o_list_renderer .o_column_sortable").click();
-    press("a");
+    await press("a");
     await animationFrame();
     expect(".o_data_row").toHaveCount(1);
 });
@@ -11241,7 +11307,7 @@ test("Navigate from an invalid but not dirty row", async () => {
     expect(".o_data_row.o_selected_row").toHaveCount(1);
     expect(".o_data_row:eq(0)").toHaveClass("o_selected_row");
 
-    press("Tab"); // navigate with "Tab" to the second row
+    await press("Tab"); // navigate with "Tab" to the second row
     await animationFrame();
 
     expect(".o_data_row.o_selected_row").toHaveCount(1);
@@ -11254,7 +11320,7 @@ test("Navigate from an invalid but not dirty row", async () => {
     expect(".o_data_row:eq(0)").toHaveClass("o_selected_row");
     expect(".o_invalid_cell").toHaveCount(0);
 
-    press("Enter"); // try to navigate with "Enter" to the second row
+    await press("Enter"); // try to navigate with "Enter" to the second row
     await animationFrame();
 
     expect(".o_data_row.o_selected_row").toHaveCount(1);
@@ -11308,7 +11374,7 @@ test.tags("desktop")("Check onchange with two consecutive one2one", async () => 
     });
 
     await clickFieldDropdown("turtle_trululu");
-    press("Enter");
+    await press("Enter");
     await animationFrame();
 
     expect(
@@ -11494,6 +11560,58 @@ test("toggle boolean in o2m with the formView in edition", async () => {
 
     await contains(".o_boolean_toggle").click();
     expect.verifySteps(["onchange partner"]);
+});
+
+test("Boolean toggle in x2many must not be editable if form is not editable", async () => {
+    Turtle._views = {
+        [["form", false]]: /* xml */ `
+            <form>
+                <field name="turtle_bar" widget="boolean_toggle"/>
+                <field name="partner_ids">
+                    <tree>
+                        <field name="bar" widget="boolean_toggle"/>
+                    </tree>
+                </field>
+            </form>
+        `,
+    };
+
+    await mountView({
+        type: "form",
+        resModel: "partner",
+        arch: `
+                <form edit="0">
+                    <field name="turtles">
+                        <tree>
+                            <field name="turtle_bar" widget="boolean_toggle"/>
+                        </tree>
+                    </field>
+                </form>`,
+        resId: 1,
+    });
+
+    expect(".o_form_renderer").toHaveClass("o_form_readonly");
+    const booleanToggle = queryOne(
+        "[name='turtles'] .o_data_row [name='turtle_bar'] .o_boolean_toggle input"
+    );
+    expect(booleanToggle).not.toBeEnabled({
+        message: "The boolean toggle should be disabled when the form is readonly",
+    });
+
+    await contains(".o_data_cell").click();
+    expect(".modal-dialog").toHaveCount(1);
+    expect(".o_form_renderer").toHaveClass("o_form_readonly");
+    const booleanToggleInDialog = queryOne(".modal [name='turtle_bar'] input");
+    expect(booleanToggleInDialog).not.toBeEnabled({
+        message:
+            "The boolean toggle in the form view dialog should be disabled when the main form is readonly",
+    });
+    expect(
+        ".modal [name='partner_ids'] .o_data_row [name='bar'] .o_boolean_toggle input"
+    ).not.toBeEnabled({
+        message:
+            "The boolean toggle in x2m in the form view dialog should be disabled when the main form is readonly",
+    });
 });
 
 test("create a new record with an x2m invisible", async () => {
@@ -11763,6 +11881,43 @@ test.tags("desktop")(
     }
 );
 
+test("new record, receive more create commands than limit", async () => {
+    Partner._fields.sequence = fields.Integer();
+    Partner._onChanges = {
+        p: function (obj) {
+            obj.p = [
+                [0, 0, { sequence: 1, display_name: "Record 1" }],
+                [0, 0, { sequence: 2, display_name: "Record 2" }],
+                [0, 0, { sequence: 3, display_name: "Record 3" }],
+                [0, 0, { sequence: 4, display_name: "Record 4" }],
+            ];
+        },
+    };
+    await mountView({
+        type: "form",
+        resModel: "partner",
+        arch: `
+            <form>
+                <group>
+                    <field name="p">
+                        <tree limit="2">
+                            <field name="sequence"/>
+                            <field name="display_name"/>
+                        </tree>
+                    </field>
+                </group>
+            </form>`,
+    });
+
+    expect(queryAllTexts(".o_data_cell.o_list_char")).toEqual([
+        "Record 1",
+        "Record 2",
+        "Record 3",
+        "Record 4",
+    ]);
+    expect(".o_x2m_control_panel .o_pager").toHaveCount(0);
+});
+
 test("active actions are passed to o2m field", async () => {
     Partner._records[0].turtles = [1, 2, 3];
 
@@ -11789,7 +11944,7 @@ test("active actions are passed to o2m field", async () => {
 
     expect(".o_data_row:eq(2)").toHaveClass("o_selected_row");
 
-    press("Enter");
+    await press("Enter");
     await animationFrame();
 
     expect(".o_data_row").toHaveCount(3);
@@ -12147,7 +12302,7 @@ test("pressing tab before an onchange is resolved", async () => {
     await contains(".o_field_widget[name='name'] input").edit("gold", { confirm: "blur" });
     await contains(".o_data_cell[name='name']").click(); // focus the input again
 
-    press("Tab");
+    await press("Tab");
     onchangeGetPromise.resolve();
     await animationFrame();
 
@@ -12826,4 +12981,65 @@ test("onchange on x2many add and delete x2m record, returning to initial state",
     await clickSave();
     expect(".o_field_widget[name=turtles] .o_data_row").toHaveCount(1);
     expect.verifySteps(["get_views", "web_read", "onchange", "onchange", "onchange"]);
+});
+
+
+test("press TAB in editable='top' create='0' one2many list with lines generated by default_get -> onchange", async () => {
+    onRpc((args) => {
+        expect.step(args.method);
+    });
+    Partner._onChanges = { p: () => {} };
+
+    onRpc("onchange", (args) => {
+        expect.step(args.method);
+        expect(args.args).toEqual([
+            [],
+            {},
+            [],
+            {
+                display_name: {},
+                p: {
+                    fields: {
+                        foo: {},
+                    },
+                    limit: 40,
+                    order: "",
+                }
+            },
+        ]);
+        return Promise.resolve({
+            value: {
+                p: [
+                    [5], // delete all
+                    [0, 0, { foo: "fu" }], // create new
+                    [0, 0, { foo: "ber" }],
+                    [0, 0, { foo: "qux" }],
+                ],
+            },
+        });
+    });
+    await mountView({
+        type: "form",
+        resModel: "partner",
+        arch: `
+            <form>
+                <field name="p">
+                    <tree editable="top" create="0">
+                        <field name="foo"/>
+                    </tree>
+                </field>
+            </form>`,
+    });
+    const target = getFixture();
+    await contains('.o_data_cell[data-tooltip="ber"]').click();
+    expect(target.querySelector(".o_selected_row .o_data_cell").dataset.tooltip).toBe("ber");
+    press("Tab");
+    await animationFrame();
+    expect(target.querySelector(".o_selected_row .o_data_cell").dataset.tooltip).toBe("qux");
+    press("Shift+Tab");
+    await animationFrame();
+    expect(target.querySelector(".o_selected_row .o_data_cell").dataset.tooltip).toBe("ber");
+    press("Shift+Tab");
+    expect(target.querySelector(".o_selected_row .o_data_cell").dataset.tooltip).toBe("ber");
+    expect.verifySteps(["get_views", "onchange"]);
 });

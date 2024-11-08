@@ -5,6 +5,8 @@ import * as Dialog from "@point_of_sale/../tests/tours/utils/dialog_util";
 import { registry } from "@web/core/registry";
 import * as TicketScreen from "@point_of_sale/../tests/tours/utils/ticket_screen_util";
 import * as Order from "@point_of_sale/../tests/tours/utils/generic_components/order_widget_util";
+import * as PaymentScreen from "@point_of_sale/../tests/tours/utils/payment_screen_util";
+import * as ReceiptScreen from "@point_of_sale/../tests/tours/utils/receipt_screen_util";
 
 registry.category("web_tour.tours").add("GiftCardProgramCreateSetTour1", {
     test: true,
@@ -111,5 +113,39 @@ registry.category("web_tour.tours").add("PosLoyaltyPointsGiftcard", {
             PosLoyalty.orderTotalIs("50.00"),
             PosLoyalty.pointsAwardedAre("100"),
             PosLoyalty.finalizeOrder("Cash", "50"),
+        ].flat(),
+});
+
+registry.category("web_tour.tours").add("PosLoyaltyGiftCardTaxes", {
+    test: true,
+    steps: () =>
+        [
+            Dialog.confirm("Open session"),
+            ProductScreen.clickDisplayedProduct("Gift Card"),
+            TextInputPopup.inputText("044123456"),
+            Dialog.confirm(),
+            PosLoyalty.orderTotalIs("50.00"),
+            PosLoyalty.finalizeOrder("Cash", "50"),
+            ProductScreen.clickDisplayedProduct("Test Product A"),
+            PosLoyalty.enterCode("044123456"),
+            PosLoyalty.orderTotalIs("50.00"),
+            ProductScreen.checkTaxAmount("-6.52"),
+        ].flat(),
+});
+
+registry.category("web_tour.tours").add("GiftCardProgramInvoice", {
+    test: true,
+    steps: () =>
+        [
+            Dialog.confirm("Open session"),
+            ProductScreen.clickDisplayedProduct("Gift Card"),
+            ProductScreen.clickPartnerButton(),
+            ProductScreen.clickCustomer("Test Partner"),
+            PosLoyalty.orderTotalIs("50.00"),
+            ProductScreen.clickPayButton(),
+            PaymentScreen.clickPaymentMethod("Bank"),
+            PaymentScreen.clickInvoiceButton(),
+            PaymentScreen.clickValidate(),
+            ReceiptScreen.isShown(),
         ].flat(),
 });

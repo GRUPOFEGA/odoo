@@ -10,7 +10,7 @@ from datetime import timedelta
 from odoo import _, api, fields, models, tools, Command
 from odoo.addons.base.models.avatar_mixin import get_hsl_from_seed
 from odoo.addons.mail.tools.discuss import Store
-from odoo.exceptions import UserError, ValidationError
+from odoo.exceptions import AccessError, UserError, ValidationError
 from odoo.osv import expression
 from odoo.tools import format_list, get_lang, html_escape
 
@@ -102,14 +102,17 @@ class Channel(models.Model):
 
     # COMPUTE / INVERSE
 
-    @api.depends('channel_type', 'is_member')
+    @api.depends("channel_type", "is_member", "group_public_id")
+    @api.depends_context("uid")
     def _compute_is_editable(self):
+        if not self.check_access_rights("write", raise_exception=False):
+            self.is_editable = False
+            return
         for channel in self:
-            if channel.channel_type == 'channel':
-                channel.is_editable = self.env.user._is_admin() or channel.create_uid.id == self.env.user.id
-            elif channel.channel_type == 'group':
-                channel.is_editable = channel.is_member and not self.env.user.share
-            else:
+            try:
+                channel.check_access_rule("write")
+                channel.is_editable = True
+            except AccessError:
                 channel.is_editable = False
 
     @api.depends('channel_type', 'image_128', 'uuid')
@@ -326,9 +329,10 @@ class Channel(models.Model):
     def _subscribe_users_automatically_get_members(self):
         """ Return new members per channel ID """
         return dict(
-            (channel.id, (channel.group_ids.users.partner_id - channel.channel_partner_ids).ids)
-            for channel in self
-        )
+            (channel.id,
+             ((channel.group_ids.users.partner_id.filtered(lambda p: p.active) - channel.channel_partner_ids).ids))
+                for channel in self
+            )
 
     def action_unfollow(self):
         self._action_unfollow(self.env.user.partner_id)
@@ -530,8 +534,8 @@ class Channel(models.Model):
         message_type = msg_vals.get('message_type', 'comment') if msg_vals else message.message_type
         pids = msg_vals.get('partner_ids', []) if msg_vals else message.partner_ids.ids
 
-        # notify only user input (comment or incoming / outgoing emails)
-        if message_type not in ('comment', 'email', 'email_outgoing'):
+        # notify only user input (comment, whatsapp messages or incoming / outgoing emails)
+        if message_type not in ('comment', 'email', 'email_outgoing', 'whatsapp_message'):
             return []
 
         recipients_data = []
@@ -721,6 +725,17 @@ class Channel(models.Model):
         mail.thread behavior completely """
         if not message.message_type == 'comment':
             raise UserError(_("Only messages type comment can have their content updated on model 'discuss.channel'"))
+
+    def _create_attachments_for_post(self, values_list, extra_list):
+        # Create voice metadata from meta information
+        attachments = super()._create_attachments_for_post(values_list, extra_list)
+        voice = attachments.env['ir.attachment']  # keep env, notably for potential sudo
+        for attachment, (_cid, _name, _token, info) in zip(attachments, extra_list):
+            if info.get('voice'):
+                voice += attachment
+        if voice:
+            voice._set_voice_metadata()
+        return attachments
 
     def _message_subscribe(self, partner_ids=None, subtype_ids=None, customer_ids=None):
         """ Do not allow follower subscription on channels. Only members are
@@ -1067,15 +1082,18 @@ class Channel(models.Model):
         """
         for channel in self:
             if not channel.message_ids.ids:
-                return
+                continue
             # a bit not-modular but helps understanding code
             if channel.channel_type not in {'chat', 'whatsapp'}:
-                return
+                continue
             last_message_id = channel.message_ids.ids[0] # zero is the index of the last message
             member = self.env['discuss.channel.member'].search([('channel_id', '=', channel.id), ('partner_id', '=', self.env.user.partner_id.id)], limit=1)
+            if not member:
+                # member not a part of the channel
+                continue
             if member.fetched_message_id.id == last_message_id:
                 # last message fetched by user is already up-to-date
-                return
+                continue
             # Avoid serialization error when multiple tabs are opened.
             query = """
                 UPDATE discuss_channel_member
@@ -1275,6 +1293,7 @@ class Channel(models.Model):
                 "%(new_line)sType %(bold_start)s@username%(bold_end)s to mention someone, and grab their attention."
                 "%(new_line)sType %(bold_start)s#channel%(bold_end)s to mention a channel."
                 "%(new_line)sType %(bold_start)s/command%(bold_end)s to execute a command."
+                "%(new_line)sType %(bold_start)s:shortcut%(bold_end)s to insert a canned response in your message."
             )
         ) % {"bold_start": Markup("<b>"), "bold_end": Markup("</b>"), "new_line": Markup("<br>")}
         return msg

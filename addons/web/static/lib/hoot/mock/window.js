@@ -2,8 +2,18 @@
 
 import { EventBus, whenReady } from "@odoo/owl";
 import { getCurrentDimensions, mockedMatchMedia } from "@web/../lib/hoot-dom/helpers/dom";
+import {
+    mockedCancelAnimationFrame,
+    mockedClearInterval,
+    mockedClearTimeout,
+    mockedRequestAnimationFrame,
+    mockedSetInterval,
+    mockedSetTimeout,
+} from "@web/../lib/hoot-dom/helpers/time";
 import { getRunner } from "../main_runner";
-import { mockNavigator } from "./navigator";
+import { MockConsole } from "./console";
+import { MockDate } from "./date";
+import { MockClipboardItem, mockNavigator } from "./navigator";
 import {
     MockBroadcastChannel,
     MockRequest,
@@ -19,15 +29,7 @@ import {
 } from "./network";
 import { MockNotification } from "./notification";
 import { MockStorage } from "./storage";
-import {
-    MockDate,
-    mockedCancelAnimationFrame,
-    mockedClearInterval,
-    mockedClearTimeout,
-    mockedRequestAnimationFrame,
-    mockedSetInterval,
-    mockedSetTimeout,
-} from "./time";
+import { MockBlob } from "./sync_values";
 
 //-----------------------------------------------------------------------------
 // Global
@@ -39,8 +41,6 @@ const {
     HTMLBodyElement,
     HTMLHeadElement,
     HTMLHtmlElement,
-    innerHeight,
-    innerWidth,
     MessagePort,
     Number: { isNaN: $isNaN, parseFloat: $parseFloat },
     Object: {
@@ -51,8 +51,6 @@ const {
         hasOwn: $hasOwn,
     },
     ontouchstart,
-    outerHeight,
-    outerWidth,
     Reflect: { ownKeys: $ownKeys },
     Set,
     SharedWorker,
@@ -115,6 +113,22 @@ const findPropertyOwner = (object, property) => {
     return object;
 };
 
+function mockedElementFromPoint() {
+    return mockedElementsFromPoint.call(this, ...arguments)[0];
+}
+
+function mockedElementsFromPoint() {
+    const { value: elementsFromPoint } = findOriginalDescriptor(document, "elementsFromPoint");
+    const elements = elementsFromPoint
+        .call(this, ...arguments)
+        .filter(
+            (el) =>
+                !el.tagName.startsWith("HOOT") && el !== this.body && el !== this.documentElement
+        );
+    elements.push(this.body, this.documentElement);
+    return elements;
+}
+
 const EVENT_TARGET_PROTOTYPES = new Map(
     [
         // Top level objects
@@ -130,12 +144,16 @@ const EVENT_TARGET_PROTOTYPES = new Map(
         Worker,
         // Others
         EventBus,
-    ].map((cls) => [cls.prototype, cls.prototype.addEventListener])
+    ].map(({ prototype }) => [
+        prototype,
+        [prototype.addEventListener, prototype.removeEventListener],
+    ])
 );
 
 /** @type {{ descriptor: PropertyDescriptor; owner: any; property: string; target: any }[]} */
 const originalDescriptors = [];
 
+const mockConsole = new MockConsole();
 const mockLocalStorage = new MockStorage();
 const mockSessionStorage = new MockStorage();
 let mockTitle = "";
@@ -146,6 +164,8 @@ const DOCUMENT_MOCK_DESCRIPTORS = {
         get: () => mockCookie.get(),
         set: (value) => mockCookie.set(value),
     },
+    elementFromPoint: { value: mockedElementFromPoint },
+    elementsFromPoint: { value: mockedElementsFromPoint },
     title: {
         get: () => mockTitle,
         set: (value) => (mockTitle = value),
@@ -153,21 +173,24 @@ const DOCUMENT_MOCK_DESCRIPTORS = {
 };
 const R_OWL_SYNTHETIC_LISTENER = /\bnativeToSyntheticEvent\b/;
 const WINDOW_MOCK_DESCRIPTORS = {
+    Blob: { value: MockBlob },
     BroadcastChannel: { value: MockBroadcastChannel },
     cancelAnimationFrame: { value: mockedCancelAnimationFrame, writable: false },
     clearInterval: { value: mockedClearInterval, writable: false },
     clearTimeout: { value: mockedClearTimeout, writable: false },
+    console: { value: mockConsole, writable: false },
+    ClipboardItem: { value: MockClipboardItem },
     Date: { value: MockDate, writable: false },
     fetch: { value: mockedFetch, writable: false },
     history: { value: mockHistory },
-    innerHeight: { get: () => getCurrentDimensions().height || innerHeight },
-    innerWidth: { get: () => getCurrentDimensions().width || innerWidth },
+    innerHeight: { get: () => getCurrentDimensions().height },
+    innerWidth: { get: () => getCurrentDimensions().width },
     localStorage: { value: mockLocalStorage, writable: false },
     matchMedia: { value: mockedMatchMedia },
     navigator: { value: mockNavigator },
     Notification: { value: MockNotification },
-    outerHeight: { get: () => getCurrentDimensions().height || outerHeight },
-    outerWidth: { get: () => getCurrentDimensions().width || outerWidth },
+    outerHeight: { get: () => getCurrentDimensions().height },
+    outerWidth: { get: () => getCurrentDimensions().width },
     Request: { value: MockRequest, writable: false },
     requestAnimationFrame: { value: mockedRequestAnimationFrame, writable: false },
     Response: { value: MockResponse, writable: false },
@@ -203,6 +226,24 @@ export function getTitle() {
         return titleDescriptor.get.call(document);
     } else {
         return document.title;
+    }
+}
+
+export function getViewPortHeight() {
+    const heightDescriptor = findOriginalDescriptor(window, "innerHeight");
+    if (heightDescriptor) {
+        return heightDescriptor.get.call(window);
+    } else {
+        return window.innerHeight;
+    }
+}
+
+export function getViewPortWidth() {
+    const titleDescriptor = findOriginalDescriptor(window, "innerWidth");
+    if (titleDescriptor) {
+        return titleDescriptor.get.call(window);
+    } else {
+        return window.innerWidth;
     }
 }
 
@@ -242,7 +283,7 @@ export function setTitle(value) {
 export function watchListeners() {
     const remaining = [];
 
-    for (const [proto, addEventListener] of EVENT_TARGET_PROTOTYPES) {
+    for (const [proto, [addEventListener, removeEventListener]] of EVENT_TARGET_PROTOTYPES) {
         proto.addEventListener = function mockedAddEventListener(...args) {
             const runner = getRunner();
             if (runner.dry) {
@@ -250,11 +291,12 @@ export function watchListeners() {
                 return;
             }
             if (runner.suiteStack.length && !R_OWL_SYNTHETIC_LISTENER.test(String(args[1]))) {
+                const cleanup = removeEventListener.bind(this, ...args);
                 // Do not cleanup:
                 // - listeners outside of suites
                 // - Owl synthetic listeners
-                remaining.push([this, args]);
-                runner.after(() => this.removeEventListener(...args));
+                remaining.push(cleanup);
+                runner.after(cleanup);
             }
             return addEventListener.call(this, ...args);
         };
@@ -262,11 +304,10 @@ export function watchListeners() {
 
     return function unwatchAllListeners() {
         while (remaining.length) {
-            const [target, args] = remaining.pop();
-            target.removeEventListener(...args);
+            remaining.pop()();
         }
 
-        for (const [proto, addEventListener] of EVENT_TARGET_PROTOTYPES) {
+        for (const [proto, [addEventListener]] of EVENT_TARGET_PROTOTYPES) {
             proto.addEventListener = addEventListener;
         }
     };

@@ -12,6 +12,7 @@ import {
 } from "@mail/../tests/mail_test_helpers";
 import { describe, test } from "@odoo/hoot";
 import { mockDate } from "@odoo/hoot-mock";
+import { getService } from "@web/../tests/web_test_helpers";
 
 describe.current.tags("desktop");
 defineMailModels();
@@ -43,13 +44,23 @@ test("bus subscription is refreshed when channel is joined", async () => {
         `${later.year}-${later.month}-${later.day} ${later.hour}:${later.minute}:${later.second}`
     );
     await start();
-    await assertSteps(["subscribe - []"]);
+    const expectedSubscribes = [];
+    for (const { type, id } of getService("mail.store").imStatusTrackedPersonas) {
+        const model = type === "partner" ? "res.partner" : "mail.guest";
+        expectedSubscribes.unshift(`"odoo-presence-${model}_${id}"`);
+    }
+    await assertSteps([`subscribe - [${expectedSubscribes.join(",")}]`]);
     await openDiscuss();
     await assertSteps([]);
     await click(".o-mail-DiscussSidebar [title='Add or join a channel']");
     await insertText(".o-discuss-ChannelSelector input", "new channel");
     await click(".o-discuss-ChannelSelector-suggestion");
-    await assertSteps(["subscribe - []"]);
+    const [newChannel] = pyEnv["discuss.channel"].search_read([["name", "=", "new channel"]]);
+    expectedSubscribes.unshift(`"discuss.channel_${newChannel.id}"`);
+    await assertSteps([
+        `subscribe - [${expectedSubscribes.join(",")}]`,
+        `subscribe - [${expectedSubscribes.join(",")}]`, // 1 is enough. The 2 comes from technical details (1: from channel_join, 2: from channel open), 2nd covers shadowing
+    ]);
 });
 
 test("bus subscription is refreshed when channel is left", async () => {
@@ -66,10 +77,15 @@ test("bus subscription is refreshed when channel is left", async () => {
     mockDate(
         `${later.year}-${later.month}-${later.day} ${later.hour}:${later.minute}:${later.second}`
     );
-    await start();
-    await assertSteps(["subscribe - []"]);
+    const env = await start();
+    const imStatusChannels = [];
+    for (const { type, id } of env.services["mail.store"].imStatusTrackedPersonas) {
+        const model = type === "partner" ? "res.partner" : "mail.guest";
+        imStatusChannels.unshift(`"odoo-presence-${model}_${id}"`);
+    }
+    await assertSteps([`subscribe - [${imStatusChannels.join(",")}]`]);
     await openDiscuss();
     await assertSteps([]);
     await click("[title='Leave this channel']");
-    await assertSteps(["subscribe - []"]);
+    await assertSteps([`subscribe - [${imStatusChannels.join(",")}]`]);
 });

@@ -368,6 +368,7 @@ class account_journal(models.Model):
     def _get_journal_dashboard_data_batched(self):
         self.env['account.move'].flush_model()
         self.env['account.move.line'].flush_model()
+        self.env['account.payment'].flush_model()
         dashboard_data = {}  # container that will be filled by functions below
         for journal in self:
             dashboard_data[journal.id] = {
@@ -436,6 +437,9 @@ class account_journal(models.Model):
 
         outstanding_pay_account_balances = bank_cash_journals._get_journal_dashboard_outstanding_payments()
 
+        # Payment with method outstanding account == journal default account
+        direct_payment_balances = bank_cash_journals._get_direct_bank_payments()
+
         # Misc Entries (journal items in the default_account not linked to bank.statement.line)
         misc_domain = []
         for journal in bank_cash_journals:
@@ -483,6 +487,7 @@ class account_journal(models.Model):
             misc_balance, number_misc, misc_currencies = misc_totals.get(journal.default_account_id, (0, 0, currency))
             currency_consistent = misc_currencies == currency
             accessible = journal.company_id.id in journal.company_id._accessible_branches().ids
+            nb_direct_payments, direct_payments_balance = direct_payment_balances[journal.id]
             drag_drop_settings = {
                 'image': '/account/static/src/img/bank.svg' if journal.type == 'bank' else '/web/static/img/rfq.svg',
                 'text': _('Drop to import transactions'),
@@ -492,9 +497,9 @@ class account_journal(models.Model):
                 'number_to_check': number_to_check,
                 'to_check_balance': currency.format(to_check_balance),
                 'number_to_reconcile': number_to_reconcile.get(journal.id, 0),
-                'account_balance': currency.format(journal.current_statement_balance),
+                'account_balance': currency.format(journal.current_statement_balance + direct_payments_balance),
                 'has_at_least_one_statement': bool(journal.last_statement_id),
-                'nb_lines_bank_account_balance': bool(journal.has_statement_lines) and accessible,
+                'nb_lines_bank_account_balance': (bool(journal.has_statement_lines) or bool(nb_direct_payments)) and accessible,
                 'outstanding_pay_account_balance': currency.format(outstanding_pay_account_balance),
                 'nb_lines_outstanding_pay_account_balance': has_outstanding,
                 'last_balance': currency.format(journal.last_statement_id.balance_end_real),
@@ -537,11 +542,13 @@ class account_journal(models.Model):
             query, params = journals._get_open_sale_purchase_query(journal_type).select(
                 SQL("account_move_line.journal_id"),
                 SQL("account_move_line.company_id"),
+                SQL("account_move_line.currency_id AS currency"),
                 SQL("account_move_line.date_maturity < %s AS late", fields.Date.context_today(self)),
                 SQL("SUM(account_move_line.amount_residual) AS amount_total_company"),
+                SQL("SUM(account_move_line.amount_residual_currency) AS amount_total"),
                 SQL("COUNT(*)"),
             )
-            query += " GROUP BY company_id, journal_id, late"
+            query += " GROUP BY company_id, journal_id, currency, late"
             self.env.cr.execute(query, params)
             query_result = group_by_journal(self.env.cr.dictfetchall())
             for journal in journals:
@@ -605,7 +612,7 @@ class account_journal(models.Model):
                 'number_draft': number_draft,
                 'number_waiting': number_waiting,
                 'number_late': number_late,
-                'sum_draft': currency.format(sum_draft * (1 if journal.type == 'sale' else -1)),
+                'sum_draft': currency.format(sum_draft),  # sign is already handled by the SQL query
                 'sum_waiting': currency.format(sum_waiting * (1 if journal.type == 'sale' else -1)),
                 'sum_late': currency.format(sum_late * (1 if journal.type == 'sale' else -1)),
                 'has_sequence_holes': journal.has_sequence_holes,
@@ -703,19 +710,26 @@ class account_journal(models.Model):
         their amount_total field (expressed in the given target currency).
         amount_total must be signed!
         """
+        if not results_dict:
+            return 0, 0
+
         total_amount = 0
         count = 0
+        company = self.env.company
+        today = fields.Date.context_today(self)
+        ResCurrency = self.env['res.currency']
+        ResCompany = self.env['res.company']
         for result in results_dict:
-            document_currency = self.env['res.currency'].browse(result.get('currency'))
-            company = self.env['res.company'].browse(result.get('company_id')) or self.env.company
-            date = result.get('invoice_date') or fields.Date.context_today(self)
-
+            document_currency = ResCurrency.browse(result.get('currency'))
+            document_company = ResCompany.browse(result.get('company_id')) or company
+            date = result.get('invoice_date') or today
             count += result.get('count', 1)
-            if company.currency_id == target_currency:
+
+            if document_company.currency_id == target_currency:
                 total_amount += result.get('amount_total_company') or 0
             else:
-                total_amount += document_currency._convert(result.get('amount_total'), target_currency, company, date)
-        return (count, target_currency.round(total_amount))
+                total_amount += document_currency._convert(result.get('amount_total'), target_currency, document_company, date)
+        return count, target_currency.round(total_amount)
 
     def _get_journal_dashboard_bank_running_balance(self):
         # In order to not recompute everything from the start, we take the last
@@ -759,6 +773,34 @@ class account_journal(models.Model):
                 bool(journal_vals['statement_id'] or journal_vals['unlinked_count']),
                 journal_vals['balance_end_real'] + journal_vals['unlinked_amount'],
             )
+        return result
+
+    def _get_direct_bank_payments(self):
+        self.env.cr.execute("""
+            SELECT move.journal_id AS journal_id,
+                   move.company_id AS company_id,
+                   move.currency_id AS currency,
+                   SUM(CASE
+                       WHEN payment.payment_type = 'outbound' THEN -payment.amount
+                       ELSE payment.amount
+                   END) AS amount_total,
+                   SUM(amount_company_currency_signed) AS amount_total_company
+              FROM account_payment payment
+              JOIN account_move move ON move.payment_id = payment.id
+              JOIN account_journal journal ON move.journal_id = journal.id
+             WHERE payment.is_matched IS TRUE
+               AND move.state = 'posted'
+               AND payment.journal_id = ANY(%s)
+               AND payment.company_id = ANY(%s)
+               AND payment.outstanding_account_id = journal.default_account_id
+          GROUP BY move.company_id, move.journal_id, move.currency_id
+        """, [self.ids, self.env.companies.ids])
+        query_result = group_by_journal(self.env.cr.dictfetchall())
+        result = {}
+        for journal in self:
+            # User may have read access on the journal but not on the company
+            currency = (journal.currency_id or journal.company_id.sudo().currency_id).with_env(self.env)
+            result[journal.id] = self._count_results_and_sum_amounts(query_result[journal.id], currency)
         return result
 
     def _get_journal_dashboard_outstanding_payments(self):
@@ -813,12 +855,21 @@ class account_journal(models.Model):
             'context': self._get_move_action_context(),
         }
 
+    def _build_no_journal_error_msg(self, company_name, journal_types):
+        return _(
+                "No journal could be found in company %(company_name)s for any of those types: %(journal_types)s",
+                company_name=company_name,
+                journal_types=', '.join(journal_types),
+            )
+
     def action_create_vendor_bill(self):
         """ This function is called by the "try our sample" button of Vendor Bills,
         visible on dashboard if no bill has been created yet.
         """
         context = dict(self._context)
-        purchase_journal = self.browse(context.get('default_journal_id'))
+        purchase_journal = self.browse(context.get('default_journal_id')) or self.search([('type', '=', 'purchase')], limit=1)
+        if not purchase_journal:
+            raise UserError(self._build_no_journal_error_msg(self.env.company.display_name, ['purchase']))
         context['default_move_type'] = 'in_invoice'
         invoice_date = fields.Date.today() - timedelta(days=12)
         partner = self.env['res.partner'].search([('name', '=', 'Deco Addict')], limit=1)

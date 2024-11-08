@@ -15,6 +15,12 @@ class StockRule(models.Model):
         """
         return procurement.values.get('sale_line_id'), super(StockRule, self)._get_procurements_to_merge_groupby(procurement)
 
+    def _get_partner_id(self, values, rule):
+        route = self.env.ref('stock_dropshipping.route_drop_shipping', raise_if_not_found=False)
+        if route and rule.route_id == route:
+            return False
+        return super()._get_partner_id(values, rule)
+
 
 class ProcurementGroup(models.Model):
     _inherit = "procurement.group"
@@ -31,10 +37,12 @@ class StockPicking(models.Model):
 
     is_dropship = fields.Boolean("Is a Dropship", compute='_compute_is_dropship')
 
-    @api.depends('location_dest_id.usage', 'location_id.usage')
+    @api.depends('location_dest_id.usage', 'location_dest_id.company_id', 'location_id.usage', 'location_id.company_id')
     def _compute_is_dropship(self):
         for picking in self:
-            picking.is_dropship = picking.location_dest_id.usage == 'customer' and picking.location_id.usage == 'supplier'
+            source, dest = picking.location_id, picking.location_dest_id
+            picking.is_dropship = (source.usage == 'supplier' or (source.usage == 'transit' and not source.company_id)) \
+                              and (dest.usage == 'customer' or (dest.usage == 'transit' and not dest.company_id))
 
     def _is_to_external_location(self):
         self.ensure_one()

@@ -42,7 +42,9 @@ test("Start edition on click edit", async () => {
     await openDiscuss(channelId);
     await click(".o-mail-Message [title='Expand']");
     await click(".o-mail-Message-moreMenu [title='Edit']");
-    await contains(".o-mail-Message-editable .o-mail-Composer-input", { value: "Hello world" });
+    await contains(".o-mail-Message .o-mail-Composer-input", { value: "Hello world" });
+    await click("a[role='button']", { text: "cancel" });
+    await contains(".o-mail-Message .o-mail-Composer-input", { count: 0 });
 });
 
 test("Edit message (mobile)", async () => {
@@ -67,15 +69,41 @@ test("Edit message (mobile)", async () => {
     await contains(".o-mail-Message");
     await click(".o-mail-Message [title='Expand']");
     await click(".o-mail-Message-moreMenu [title='Edit']");
-    await contains(".o-mail-Message-editable .o-mail-Composer-input", { value: "Hello world" });
+    await contains(".o-mail-Message.o-editing .o-mail-Composer-input", { value: "Hello world" });
     await click("button", { text: "Discard editing" });
-    await contains(".o-mail-Message-editable .o-mail-Composer", { count: 0 });
+    await contains(".o-mail-Message.o-editing .o-mail-Composer", { count: 0 });
     await contains(".o-mail-Message-content", { text: "Hello world" });
     await click(".o-mail-Message [title='Expand']");
     await click(".o-mail-Message-moreMenu [title='Edit']");
     await insertText(".o-mail-Message .o-mail-Composer-input", "edited message", { replace: true });
     await click(".o-mail-Message .fa-paper-plane-o");
     await contains(".o-mail-Message-content", { text: "edited message" });
+});
+
+test("Editing message keeps the mentioned channels", async () => {
+    const pyEnv = await startServer();
+    const channelId1 = pyEnv["discuss.channel"].create({
+        name: "general",
+        channel_type: "channel",
+    });
+    pyEnv["discuss.channel"].create({
+        name: "other",
+        channel_type: "channel",
+    });
+    await start();
+    await openDiscuss(channelId1);
+    await insertText(".o-mail-Composer-input", "#");
+    await click(".o-mail-Composer-suggestion strong", { text: "#other" });
+    await click(".o-mail-Composer-send:enabled");
+    await contains(".o_channel_redirect", { count: 1, text: "#other" });
+    await click(".o-mail-Message [title='Expand']");
+    await click(".o-mail-Message-moreMenu [title='Edit']");
+    await contains(".o-mail-Message .o-mail-Composer-input", { value: "#other" });
+    await insertText(".o-mail-Message .o-mail-Composer-input", "#other bye", { replace: true });
+    await click(".o-mail-Message a", { text: "save" });
+    await contains(".o-mail-Message-content", { text: "#other bye" });
+    await click(".o_channel_redirect", { text: "#other" });
+    await contains(".o-mail-Discuss-threadName", { value: "other" });
 });
 
 test("Can edit message comment in chatter", async () => {
@@ -158,7 +186,7 @@ test("Stop edition on click cancel", async () => {
     await click(".o-mail-Message [title='Expand']");
     await click(".o-mail-Message-moreMenu [title='Edit']");
     await click(".o-mail-Message a", { text: "cancel" });
-    await contains(".o-mail-Message-editable .o-mail-Composer", { count: 0 });
+    await contains(".o-mail-Message.o-editing .o-mail-Composer", { count: 0 });
 });
 
 test("Stop edition on press escape", async () => {
@@ -179,7 +207,7 @@ test("Stop edition on press escape", async () => {
     await click(".o-mail-Message [title='Expand']");
     await click(".o-mail-Message-moreMenu [title='Edit']");
     triggerHotkey("Escape", false);
-    await contains(".o-mail-Message-editable .o-mail-Composer", { count: 0 });
+    await contains(".o-mail-Message.o-editing .o-mail-Composer", { count: 0 });
 });
 
 test("Stop edition on click save", async () => {
@@ -200,7 +228,7 @@ test("Stop edition on click save", async () => {
     await click(".o-mail-Message [title='Expand']");
     await click(".o-mail-Message-moreMenu [title='Edit']");
     await click(".o-mail-Message a", { text: "save" });
-    await contains(".o-mail-Message-editable .o-mail-Composer", { count: 0 });
+    await contains(".o-mail-Message.o-editing .o-mail-Composer", { count: 0 });
 });
 
 test("Stop edition on press enter", async () => {
@@ -221,7 +249,7 @@ test("Stop edition on press enter", async () => {
     await click(".o-mail-Message [title='Expand']");
     await click(".o-mail-Message-moreMenu [title='Edit']");
     triggerHotkey("Enter", false);
-    await contains(".o-mail-Message-editable .o-mail-Composer", { count: 0 });
+    await contains(".o-mail-Message.o-editing .o-mail-Composer", { count: 0 });
 });
 
 test("Do not stop edition on click away when clicking on emoji", async () => {
@@ -243,7 +271,7 @@ test("Do not stop edition on click away when clicking on emoji", async () => {
     await click(".o-mail-Message-moreMenu [title='Edit']");
     await click(".o-mail-Composer button[aria-label='Emojis']");
     await click(".o-EmojiPicker-content :nth-child(1 of .o-Emoji)");
-    await contains(".o-mail-Message-editable .o-mail-Composer");
+    await contains(".o-mail-Message.o-editing .o-mail-Composer");
 });
 
 test("Edit and click save", async () => {
@@ -1009,7 +1037,7 @@ test('Quick edit (edit from Composer with ArrowUp) ignores empty ("deleted") mes
     await openDiscuss(channelId);
     await contains(".o-mail-Message");
     triggerHotkey("ArrowUp");
-    await contains(".o-mail-Message .o-mail-Message-editable");
+    await contains(".o-mail-Message.o-editing");
     await contains(".o-mail-Message .o-mail-Composer-input", { value: "not empty" });
 });
 
@@ -1030,7 +1058,7 @@ test("Editing a message to clear its composer opens message delete dialog.", asy
     await openDiscuss(channelId);
     await click(".o-mail-Message [title='Expand']");
     await click(".o-mail-Message-moreMenu [title='Edit']");
-    await insertText(".o-mail-Message-editable .o-mail-Composer-input", "", { replace: true });
+    await insertText(".o-mail-Message.o-editing .o-mail-Composer-input", "", { replace: true });
     triggerHotkey("Enter");
     await contains(".modal-body p", { text: "Are you sure you want to delete this message?" });
 });
@@ -1055,7 +1083,7 @@ test("Clear message body should not open message delete dialog if it has attachm
     await openDiscuss(channelId);
     await click(".o-mail-Message [title='Expand']");
     await click(".o-mail-Message-moreMenu [title='Edit']");
-    await insertText(".o-mail-Message-editable .o-mail-Composer-input", "", { replace: true });
+    await insertText(".o-mail-Message.o-editing .o-mail-Composer-input", "", { replace: true });
     triggerHotkey("Enter");
     await contains(".o-mail-Message-textContent", { text: "" });
     // weak test, no guarantee that we waited long enough for the potential dialog to show
@@ -1082,7 +1110,7 @@ test("highlight the message mentioning the current user inside the channel", asy
     });
     await start();
     await openDiscuss(channelId);
-    await contains(".o-mail-Message-bubble.bg-warning-light");
+    await contains(".o-mail-Message-bubble.o-orange");
 });
 
 test("not highlighting the message if not mentioning the current user inside the channel", async () => {
@@ -1105,7 +1133,7 @@ test("not highlighting the message if not mentioning the current user inside the
     });
     await start();
     await openDiscuss(channelId);
-    await contains(".o-mail-Message-bubble:not(.bg-warning-light)");
+    await contains(".o-mail-Message-bubble:not(.o-orange)");
 });
 
 test("allow attachment delete on authored message", async () => {
@@ -1128,7 +1156,8 @@ test("allow attachment delete on authored message", async () => {
     });
     await start();
     await openDiscuss(channelId);
-    await click(".o-mail-AttachmentImage [title='Remove']");
+    await click(".o-mail-AttachmentImage [title='Actions']");
+    await click(".dropdown-item", { text: "Remove" });
     await contains(".modal-dialog .modal-body", { text: 'Do you really want to delete "BLAH"?' });
     await click(".modal-footer .btn-primary");
     await contains(".o-mail-AttachmentCard", { count: 0 });
@@ -1198,7 +1227,8 @@ test("allow attachment image download on message", async () => {
     });
     await start();
     await openDiscuss(channelId);
-    await contains(".o-mail-AttachmentImage .fa-download");
+    await click(".o-mail-AttachmentImage [title='Actions']");
+    await contains(".dropdown-item", { text: "Download" });
 });
 
 test("Can download all files of a message", async () => {
@@ -1712,7 +1742,7 @@ test("Can edit a message only containing an attachment", async () => {
     await openDiscuss(channelId);
     await click(".o-mail-Message [title='Expand']");
     await click(".o-mail-Message-moreMenu [title='Edit']");
-    await contains(".o-mail-Message-editable .o-mail-Composer-input");
+    await contains(".o-mail-Message.o-editing .o-mail-Composer-input");
 });
 
 test("Click on view reactions shows the reactions on the message", async () => {

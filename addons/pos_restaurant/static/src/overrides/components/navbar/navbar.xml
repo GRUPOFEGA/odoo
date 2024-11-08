@@ -3,7 +3,7 @@
     <t t-name="pos_restaurant.Navbar" t-inherit="point_of_sale.Navbar" t-inherit-mode="extension">
         <xpath expr="//DropdownItem[contains(text(), 'Backend')]" position="before">
             <t t-if="pos.mainScreen.component.name == 'FloorScreen'">
-                <DropdownItem t-if="showEditPlanButton" onSelected="() => this.pos.toggleEditMode()">
+                <DropdownItem t-if="showEditPlanButton and this.pos.config.floor_ids.length" onSelected="() => this.pos.toggleEditMode()">
                     Edit Plan
                 </DropdownItem>
             </t>
@@ -14,7 +14,7 @@
         <xpath expr="//div[hasclass('pos-rightheader')]" position="before">
             <div t-if="pos.config.module_pos_restaurant" class="ms-1 d-flex overflow-hidden position-relative">
                 <span t-if="showTableIcon"
-                    t-esc="getTable().name"
+                    t-esc="getTableName()"
                     t-attf-style="background-color: {{getTable().color}};border-radius: 0.25rem;"
                     class="table-name text-white fw-bolder px-3 my-2 me-1 py-1 d-flex align-items-center" 
                     t-on-click="() => this.switchTable()"/>

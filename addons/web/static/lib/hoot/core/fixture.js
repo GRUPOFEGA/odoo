@@ -82,19 +82,15 @@ export function makeFixtureManager(runner) {
         }
         if (!fixture) {
             fixture = document.createElement("hoot-fixture");
-            if (runner.debug) {
+            if (runner.debug || runner.config.headless) {
                 fixture.setAttribute("style", FIXTURE_DEBUG_STYLE);
             } else {
                 fixture.setAttribute("style", FIXTURE_STYLE);
             }
 
-            const dimensions = getCurrentDimensions();
-            if (dimensions.width) {
-                fixture.style.width = `${dimensions.width}px`;
-            }
-            if (dimensions.height) {
-                fixture.style.height = `${dimensions.height}px`;
-            }
+            const { width, height } = getCurrentDimensions();
+            fixture.style.width = `${width}px`;
+            fixture.style.height = `${height}px`;
 
             setupEventActions(fixture);
 

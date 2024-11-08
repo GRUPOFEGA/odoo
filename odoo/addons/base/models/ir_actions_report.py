@@ -1,14 +1,17 @@
 # -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
+from contextlib import ExitStack
 from markupsafe import Markup
 from urllib.parse import urlparse
 
 from odoo import api, fields, models, tools, SUPERUSER_ID, _
-from odoo.exceptions import UserError, AccessError
+from odoo.exceptions import UserError, AccessError, RedirectWarning
+from odoo.service import security
 from odoo.tools.safe_eval import safe_eval, time
 from odoo.tools.misc import find_in_path, ustr
 from odoo.tools import check_barcode_encoding, config, is_html_empty, parse_version, split_every
-from odoo.http import request
+from odoo.http import request, root
+from odoo.tools.pdf import PdfFileWriter, PdfFileReader, PdfReadError
 from odoo.osv.expression import NEGATIVE_TERM_OPERATORS, FALSE_DOMAIN
 
 import io
@@ -23,7 +26,7 @@ import json
 from lxml import etree
 from contextlib import closing
 from reportlab.graphics.barcode import createBarcodeDrawing
-from PyPDF2 import PdfFileWriter, PdfFileReader
+from reportlab.pdfbase.pdfmetrics import getFont, TypeFace
 from collections import OrderedDict
 from collections.abc import Iterable
 from PIL import Image, ImageFile
@@ -32,11 +35,6 @@ from itertools import islice
 # Allow truncated images
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
-try:
-    from PyPDF2.errors import PdfReadError
-except ImportError:
-    from PyPDF2.utils import PdfReadError
-
 _logger = logging.getLogger(__name__)
 
 # A lock occurs when the user wants to print a report having multiple barcode while the server is
@@ -44,14 +42,28 @@ _logger = logging.getLogger(__name__)
 # before rendering a barcode (done in a C extension) and this part is not thread safe. We attempt
 # here to init the T1 fonts cache at the start-up of Odoo so that rendering of barcode in multiple
 # thread does not lock the server.
+_DEFAULT_BARCODE_FONT = 'Courier'
 try:
-    createBarcodeDrawing('Code128', value='foo', format='png', width=100, height=100, humanReadable=1).asString('png')
+    available = TypeFace(_DEFAULT_BARCODE_FONT).findT1File()
+    if not available:
+        substitution_font = 'NimbusMonoPS-Regular'
+        fnt = getFont(substitution_font)
+        if fnt:
+            _DEFAULT_BARCODE_FONT = substitution_font
+            fnt.ascent = 629
+            fnt.descent = -157
+    createBarcodeDrawing('Code128', value='foo', format='png', width=100, height=100, humanReadable=1, fontName=_DEFAULT_BARCODE_FONT).asString('png')
 except Exception:
     pass
 
 
 def _get_wkhtmltopdf_bin():
     return find_in_path('wkhtmltopdf')
+
+
+def _get_wkhtmltoimage_bin():
+    return find_in_path('wkhtmltoimage')
+
 
 def _split_table(tree, max_rows):
     """
@@ -103,6 +115,23 @@ else:
         _logger.info('Wkhtmltopdf seems to be broken.')
         wkhtmltopdf_state = 'broken'
 
+wkhtmltoimage_version = None
+try:
+    process = subprocess.Popen(
+        [_get_wkhtmltoimage_bin(), '--version'], stdout=subprocess.PIPE, stderr=subprocess.PIPE
+    )
+except OSError:
+    _logger.info('You need Wkhtmltoimage to generate images from html.')
+else:
+    _logger.info('Will use the Wkhtmltoimage binary at %s', _get_wkhtmltoimage_bin())
+    out, err = process.communicate()
+    match = re.search(b'([0-9.]+)', out)
+    if match:
+        wkhtmltoimage_version = parse_version(match.group(0).decode('ascii'))
+        if config['workers'] == 1:
+            _logger.info('You need to start Odoo with at least two workers to convert images to html.')
+    else:
+        _logger.info('Wkhtmltoimage seems to be broken.')
 
 class IrActionsReport(models.Model):
     _name = 'ir.actions.report'
@@ -413,6 +442,50 @@ class IrActionsReport(models.Model):
 
         return bodies, res_ids, header, footer, specific_paperformat_args
 
+    def _run_wkhtmltoimage(self, bodies, width, height, image_format="jpg"):
+        """
+        :bodies str: valid html documents as strings
+        :param width int: width in pixels
+        :param height int: height in pixels
+        :param image_format union['jpg', 'png']: format of the image
+        :return list[bytes|None]:
+        """
+        if (tools.config['test_enable'] or tools.config['test_file']) and not self.env.context.get('force_image_rendering'):
+            return [None] * len(bodies)
+        if not wkhtmltoimage_version or wkhtmltoimage_version < parse_version('0.12.0'):
+            raise UserError(_('wkhtmltoimage 0.12.0^ is required in order to render images from html'))
+        command_args = [
+            '--disable-local-file-access', '--disable-javascript',
+            '--quiet',
+            '--width', str(width), '--height', str(height),
+            '--format', image_format,
+        ]
+        with ExitStack() as stack:
+            files = []
+            for body in bodies:
+                input_file = stack.enter_context(tempfile.NamedTemporaryFile(suffix='.html', prefix='report_image_html_input.tmp.'))
+                output_file = stack.enter_context(tempfile.NamedTemporaryFile(suffix=f'.{image_format}', prefix='report_image_output.tmp.'))
+                input_file.write(body.encode())
+                files.append((input_file, output_file))
+            output_images = []
+            for input_file, output_file in files:
+                # smaller bodies may be held in a python buffer until close, force flush
+                input_file.flush()
+                wkhtmltoimage = [_get_wkhtmltoimage_bin()] + command_args + [input_file.name, output_file.name]
+                # start and block, no need for parallelism for now
+                completed_process = subprocess.run(wkhtmltoimage, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, check=False)
+                if completed_process.returncode:
+                    message = _(
+                        'Wkhtmltoimage failed (error code: %(error_code)s). Message: %(error_message_end)s',
+                        error_code=completed_process.returncode,
+                        error_message_end=completed_process.stderr[-1000:],
+                    )
+                    _logger.warning(message)
+                    output_images.append(None)
+                else:
+                    output_images.append(output_file.read())
+        return output_images
+
     @api.model
     def _run_wkhtmltopdf(
             self,
@@ -447,12 +520,23 @@ class IrActionsReport(models.Model):
 
         files_command_args = []
         temporary_files = []
+        temp_session = None
 
         # Passing the cookie to wkhtmltopdf in order to resolve internal links.
         if request and request.db:
+            # Create a temporary session which will not create device logs
+            temp_session = root.session_store.new()
+            temp_session.update({
+                **request.session,
+                '_trace_disable': True,
+            })
+            if temp_session.uid:
+                temp_session.session_token = security.compute_session_token(temp_session, self.env)
+            root.session_store.save(temp_session)
+
             base_url = self._get_report_url()
             domain = urlparse(base_url).hostname
-            cookie = f'session_id={request.session.sid}; HttpOnly; domain={domain}; path=/;'
+            cookie = f'session_id={temp_session.sid}; HttpOnly; domain={domain}; path=/;'
             cookie_jar_file_fd, cookie_jar_file_path = tempfile.mkstemp(suffix='.txt', prefix='report.cookie_jar.tmp.')
             temporary_files.append(cookie_jar_file_path)
             with closing(os.fdopen(cookie_jar_file_fd, 'wb')) as cookie_jar_file:
@@ -523,6 +607,9 @@ class IrActionsReport(models.Model):
                     _logger.warning('wkhtmltopdf: %s' % err)
         except:
             raise
+        finally:
+            if temp_session:
+                root.session_store.delete(temp_session)
 
         with open(pdf_report_path, 'rb') as pdf_document:
             pdf_content = pdf_document.read()
@@ -591,6 +678,8 @@ class IrActionsReport(models.Model):
         }
         kwargs = {k: validator(kwargs.get(k, v)) for k, (v, validator) in defaults.items()}
         kwargs['humanReadable'] = kwargs.pop('humanreadable')
+        if kwargs['humanReadable']:
+            kwargs['fontName'] = _DEFAULT_BARCODE_FONT
 
         if barcode_type == 'UPCA' and len(value) in (11, 12, 13):
             barcode_type = 'EAN13'
@@ -676,6 +765,11 @@ class IrActionsReport(models.Model):
                 reader = PdfFileReader(stream)
                 writer.appendPagesFromReader(reader)
             except (PdfReadError, TypeError, NotImplementedError, ValueError):
+                # TODO : make custom_error_handler a parameter in master
+                custom_error_handler = self.env.context.get('custom_error_handler')
+                if custom_error_handler:
+                    custom_error_handler(stream)
+                    continue
                 raise UserError(_("Odoo is unable to merge the generated PDFs."))
         result_stream = io.BytesIO()
         streams.append(result_stream)
@@ -909,7 +1003,6 @@ class IrActionsReport(models.Model):
         if report_type != 'pdf':
             return collected_streams, report_type
 
-        collected_streams = self._render_qweb_pdf_prepare_streams(report_ref, data, res_ids=res_ids)
         has_duplicated_ids = res_ids and len(res_ids) != len(set(res_ids))
 
         # access the report details with sudo() but keep evaluation context as current user
@@ -927,13 +1020,38 @@ class IrActionsReport(models.Model):
                 else:
                     _logger.info("The PDF documents %r are now saved in the database", attachment_names)
 
+        stream_to_ids = {v['stream']: k for k, v in collected_streams.items() if v['stream']}
         # Merge all streams together for a single record.
-        streams_to_merge = [x['stream'] for x in collected_streams.values() if x['stream']]
+        streams_to_merge = list(stream_to_ids.keys())
+        error_record_ids = []
+
         if len(streams_to_merge) == 1:
             pdf_content = streams_to_merge[0].getvalue()
         else:
-            with self._merge_pdfs(streams_to_merge) as pdf_merged_stream:
+            with self.with_context(
+                    custom_error_handler=lambda error_stream: error_record_ids.append(stream_to_ids[error_stream])
+            )._merge_pdfs(streams_to_merge) as pdf_merged_stream:
                 pdf_content = pdf_merged_stream.getvalue()
+
+        if error_record_ids:
+            action = {
+                'type': 'ir.actions.act_window',
+                'name': _('Problematic record(s)'),
+                'res_model': report_sudo.model,
+                'domain': [('id', 'in', error_record_ids)],
+                'views': [(False, 'tree'), (False, 'form')],
+            }
+            num_errors = len(error_record_ids)
+            if num_errors == 1:
+                action.update({
+                    'views': [(False, 'form')],
+                    'res_id': error_record_ids[0],
+                })
+            raise RedirectWarning(
+                message=_('Odoo is unable to merge the generated PDFs because of %(num_errors)s corrupted file(s)', num_errors=num_errors),
+                action=action,
+                button_text=_('View Problematic Record(s)'),
+            )
 
         for stream in streams_to_merge:
             stream.close()

@@ -14,7 +14,6 @@ import {
     clickOnButtonAddNewRule,
     clickOnButtonDeleteNode,
     editValue,
-    get,
     getOperatorOptions,
     getTreeEditorContent,
     getValueOptions,
@@ -40,17 +39,22 @@ const SELECTORS = {
     debugArea: ".o_expression_editor_debug_container textarea",
 };
 
-function editExpression(value, index = 0) {
-    const input = get(SELECTORS.complexConditionInput, index);
-    click(input);
+/**
+ * @param {string} value
+ */
+async function editExpression(value) {
+    await click(SELECTORS.complexConditionInput);
+
     edit(value);
+    await animationFrame();
 }
 
-async function selectConnector(value, index = 0) {
-    const toggler = get(`${SELECTORS.connector} .dropdown-toggle`, index);
-    await contains(toggler).click();
-    const dropdownMenu = get(`${SELECTORS.connector} .dropdown-menu `, index);
-    await contains(`.dropdown-item:contains(${value})`, { root: dropdownMenu }).click();
+/**
+ * @param {string} value
+ */
+async function selectConnector(value) {
+    await contains(`${SELECTORS.connector} .dropdown-toggle`).click();
+    await contains(`.dropdown-menu .dropdown-item:contains(${value})`).click();
 }
 
 async function makeExpressionEditor(params = {}) {
@@ -141,7 +145,7 @@ test("edit a complex condition in dev mode", async () => {
         { value: "all", level: 0 },
         { value: "expr", level: 1 },
     ]);
-    editExpression("uid");
+    await editExpression("uid");
     expect(getTreeEditorContent()).toEqual([
         { value: "all", level: 0 },
         { value: "uid", level: 1 },
@@ -183,7 +187,7 @@ test("change path, operator and value", async () => {
     const tree = getTreeEditorContent({ node: true });
     await openModelFieldSelectorPopover();
     await contains(".o_model_field_selector_popover_item_name:eq(5)").click();
-    await selectOperator("not in", tree[1].node);
+    await selectOperator("not in", 0, tree[1].node);
     await editValue(["Doku", "Lukaku", "KDB"]);
     expect(getTreeEditorContent()).toEqual([
         { level: 0, value: "all" },
@@ -208,7 +212,6 @@ test("create a new branch from a complex condition control panel", async () => {
 });
 
 test("rendering of a valid fieldName in fields", async () => {
-    Partner._fields.foo = fields.Char({ string: "Foo", searchable: true });
     const parent = await makeExpressionEditor({ fieldFilters: ["foo"] });
 
     const toTests = [
@@ -239,8 +242,7 @@ test("rendering of a valid fieldName in fields", async () => {
 });
 
 test("rendering of simple conditions", async () => {
-    Partner._fields.foo = fields.Char({ string: "Foo", searchable: true });
-    Partner._fields.bar = fields.Char({ string: "Bar", searchable: true });
+    Partner._fields.bar = fields.Char();
     Partner._records = [];
     const parent = await makeExpressionEditor({ fieldFilters: ["foo", "bar"] });
 
@@ -307,7 +309,7 @@ test("rendering of connectors (2)", async () => {
             expect.step(expression);
         },
     });
-    expect(queryOne(`${SELECTORS.connector} .dropdown-toggle`)).toHaveText("none");
+    expect(`${SELECTORS.connector} .dropdown-toggle:only`).toHaveText("none");
     expect(getTreeEditorContent()).toEqual([
         { level: 0, value: "none" },
         { level: 1, value: "expr" },
@@ -317,7 +319,7 @@ test("rendering of connectors (2)", async () => {
     expect(queryOne(SELECTORS.debugArea)).toHaveValue(`not (expr or foo == "abc")`);
 
     await selectConnector("all");
-    expect(queryOne(`${SELECTORS.connector} .dropdown-toggle`)).toHaveText("all");
+    expect(`${SELECTORS.connector} .dropdown-toggle:only`).toHaveText("all");
     expect(getTreeEditorContent()).toEqual([
         { level: 0, value: "all" },
         { level: 1, value: "expr" },
@@ -380,9 +382,8 @@ test("no field of type properties in model field selector", async () => {
         string: "Properties",
         definition_record: "product_id",
         definition_record_field: "definitions",
-        searchable: true,
     });
-    Product._fields.definitions = fields.PropertiesDefinition({ string: "Definitions" });
+    Product._fields.definitions = fields.PropertiesDefinition();
     await makeExpressionEditor({
         expression: `properties`,
         fieldFilters: ["foo", "bar", "properties"],

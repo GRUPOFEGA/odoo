@@ -1,15 +1,9 @@
 import { registry } from "@web/core/registry";
 import { Base } from "./related_models";
 import { _t } from "@web/core/l10n/translation";
-import { formatDate, formatDateTime } from "@web/core/l10n/dates";
+import { formatDate, formatDateTime, serializeDateTime } from "@web/core/l10n/dates";
 import { omit } from "@web/core/utils/objects";
-import {
-    getUTCString,
-    parseUTCString,
-    qrCodeSrc,
-    random5Chars,
-    uuidv4,
-} from "@point_of_sale/utils";
+import { parseUTCString, qrCodeSrc, random5Chars, uuidv4 } from "@point_of_sale/utils";
 import { renderToElement } from "@web/core/utils/render";
 import { floatIsZero, roundPrecision } from "@web/core/utils/numbers";
 import { computeComboLines } from "./utils/compute_combo_lines";
@@ -24,8 +18,12 @@ export class PosOrder extends Base {
     setup(vals) {
         super.setup(vals);
 
+        if (!this.session_id && !this.finalized) {
+            this.update({ session_id: this.session });
+        }
+
         // Data present in python model
-        this.date_order = vals.date_order || getUTCString(luxon.DateTime.now());
+        this.date_order = vals.date_order || serializeDateTime(luxon.DateTime.now());
         this.to_invoice = vals.to_invoice || false;
         this.shipping_date = vals.shipping_date || false;
         this.state = vals.state || "draft";
@@ -86,6 +84,10 @@ export class PosOrder extends Base {
         return this.state !== "draft";
     }
 
+    get originalSplittedOrder() {
+        return this.models["pos.order"].find((o) => o.uuid === this.uiState.splittedOrderUuid);
+    }
+
     getEmailItems() {
         return [_t("the receipt")].concat(this.is_to_invoice() ? [_t("the invoice")] : []);
     }
@@ -104,10 +106,10 @@ export class PosOrder extends Base {
             total_discount: this.get_total_discount(),
             rounding_applied: this.get_rounding_applied(),
             tax_details: this.get_tax_details(),
-            change: this.uiState.locked ? this.amount_return : this.get_change(),
-            name: this.name,
+            change: this.amount_return,
+            name: this.pos_reference,
             invoice_id: null, //TODO
-            cashier: this.employee_id?.name || this.user_id?.name,
+            cashier: this.getCashierName(),
             date: formatDateTime(parseUTCString(this.date_order)),
             pos_qr_code:
                 this.company.point_of_sale_use_ticket_qr_code &&
@@ -117,13 +119,15 @@ export class PosOrder extends Base {
             base_url: baseUrl,
             footer: this.config.receipt_footer,
             // FIXME: isn't there a better way to handle this date?
-            shippingDate:
-                this.shipping_date && formatDate(DateTime.fromJSDate(new Date(this.shipping_date))),
+            shippingDate: this.shipping_date && formatDate(DateTime.fromSQL(this.shipping_date)),
             headerData: {
                 ...headerData,
                 trackingNumber: this.tracking_number,
             },
         };
+    }
+    getCashierName() {
+        return this.user_id?.name;
     }
     canPay() {
         return this.lines.length;
@@ -133,6 +137,10 @@ export class PosOrder extends Base {
         this.amount_tax = this.get_total_tax();
         this.amount_total = this.get_total_with_tax();
         this.amount_return = this.get_change();
+        this.lines.forEach((line) => {
+            line.price_subtotal = line.get_price_without_tax();
+            line.price_subtotal_incl = line.get_price_with_tax();
+        });
     }
 
     // NOTE args added [unwatchedPrinter]
@@ -169,7 +177,7 @@ export class PosOrder extends Base {
                     cancelled: changes["cancelled"],
                     table_name: this.table_id?.name,
                     floor_name: this.table_id?.floor_id?.name,
-                    name: this.name || "unknown order",
+                    name: this.pos_reference || "unknown order",
                     time: {
                         hours,
                         minutes,
@@ -190,7 +198,7 @@ export class PosOrder extends Base {
     }
 
     get isBooked() {
-        return this.uiState.booked || !this.is_empty() || typeof this.id === "number";
+        return Boolean(this.uiState.booked || !this.is_empty() || typeof this.id === "number");
     }
 
     _getPrintingCategoriesChanges(categories, currentOrderChange) {
@@ -242,6 +250,7 @@ export class PosOrder extends Base {
                     };
                 }
                 line.setHasChange(false);
+                line.saved_quantity = line.get_quantity();
             }
         });
 
@@ -600,12 +609,20 @@ export class PosOrder extends Base {
     }
 
     get_total_with_tax() {
-        return this.get_total_without_tax() + this.get_total_tax();
+        return this.get_total_with_tax_of_lines(this.lines);
+    }
+
+    get_total_with_tax_of_lines(lines) {
+        return this.get_total_without_tax_of_lines(lines) + this.get_total_tax_of_lines(lines);
     }
 
     get_total_without_tax() {
+        return this.get_total_without_tax_of_lines(this.lines);
+    }
+
+    get_total_without_tax_of_lines(lines) {
         return roundPrecision(
-            this.lines.reduce(function (sum, line) {
+            lines.reduce(function (sum, line) {
                 return sum + line.get_price_without_tax();
             }, 0),
             this.currency.rounding
@@ -633,9 +650,8 @@ export class PosOrder extends Base {
             this.lines.reduce((sum, orderLine) => {
                 if (!ignored_product_ids.includes(orderLine.product_id.id)) {
                     sum +=
-                        orderLine.getUnitDisplayPriceBeforeDiscount() *
-                        (orderLine.get_discount() / 100) *
-                        orderLine.get_quantity();
+                        orderLine.get_all_prices().priceWithTaxBeforeDiscount -
+                        orderLine.get_all_prices().priceWithTax;
                     if (orderLine.display_discount_policy() === "without_discount") {
                         sum +=
                             (orderLine.get_taxed_lst_unit_price() -
@@ -650,13 +666,17 @@ export class PosOrder extends Base {
     }
 
     get_total_tax() {
+        return this.get_total_tax_of_lines(this.lines);
+    }
+
+    get_total_tax_of_lines(lines) {
         if (this.company.tax_calculation_rounding_method === "round_globally") {
             // As always, we need:
             // 1. For each tax, sum their amount across all order lines
             // 2. Round that result
             // 3. Sum all those rounded amounts
             const groupTaxes = {};
-            this.lines.forEach(function (line) {
+            lines.forEach(function (line) {
                 const taxDetails = line.get_tax_details();
                 const taxIds = Object.keys(taxDetails);
                 for (const taxId of taxIds) {
@@ -677,7 +697,7 @@ export class PosOrder extends Base {
             return sum;
         } else {
             return roundPrecision(
-                this.lines.reduce(function (sum, orderLine) {
+                lines.reduce(function (sum, orderLine) {
                     return sum + orderLine.get_tax();
                 }, 0),
                 this.currency.rounding
@@ -702,8 +722,12 @@ export class PosOrder extends Base {
     }
 
     get_tax_details() {
+        return this.get_tax_details_of_lines(this.lines);
+    }
+
+    get_tax_details_of_lines(lines) {
         const taxDetails = {};
-        for (const line of this.lines) {
+        for (const line of lines) {
             for (const taxData of line.get_all_prices().taxesData) {
                 const taxId = taxData.id;
                 if (!taxDetails[taxId]) {
@@ -864,7 +888,7 @@ export class PosOrder extends Base {
     }
 
     is_paid() {
-        return this.get_due() <= 0 && this.check_paymentlines_rounding();
+        return this.get_due() <= 0;
     }
 
     is_paid_with_cash() {

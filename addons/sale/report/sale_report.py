@@ -108,7 +108,7 @@ class SaleReport(models.Model):
             CASE WHEN l.product_id IS NOT NULL THEN SUM((l.product_uom_qty - l.qty_delivered) / u.factor * u2.factor) ELSE 0 END AS qty_to_deliver,
             CASE WHEN l.product_id IS NOT NULL THEN SUM(l.qty_invoiced / u.factor * u2.factor) ELSE 0 END AS qty_invoiced,
             CASE WHEN l.product_id IS NOT NULL THEN SUM(l.qty_to_invoice / u.factor * u2.factor) ELSE 0 END AS qty_to_invoice,
-            CASE WHEN l.product_id IS NOT NULL THEN SUM(l.price_unit
+            CASE WHEN l.product_id IS NOT NULL THEN AVG(l.price_unit
                 / {self._case_value_or_one('s.currency_rate')}
                 * {self._case_value_or_one('currency_table.rate')}
                 ) ELSE 0
@@ -123,12 +123,12 @@ class SaleReport(models.Model):
                 * {self._case_value_or_one('currency_table.rate')}
                 ) ELSE 0
             END AS price_subtotal,
-            CASE WHEN l.product_id IS NOT NULL THEN SUM(l.untaxed_amount_to_invoice
+            CASE WHEN l.product_id IS NOT NULL OR l.is_downpayment THEN SUM(l.untaxed_amount_to_invoice
                 / {self._case_value_or_one('s.currency_rate')}
                 * {self._case_value_or_one('currency_table.rate')}
                 ) ELSE 0
             END AS untaxed_amount_to_invoice,
-            CASE WHEN l.product_id IS NOT NULL THEN SUM(l.untaxed_amount_invoiced
+            CASE WHEN l.product_id IS NOT NULL OR l.is_downpayment THEN SUM(l.untaxed_amount_invoiced
                 / {self._case_value_or_one('s.currency_rate')}
                 * {self._case_value_or_one('currency_table.rate')}
                 ) ELSE 0
@@ -228,6 +228,7 @@ class SaleReport(models.Model):
             partner.industry_id,
             partner.state_id,
             partner.zip,
+            l.is_downpayment,
             l.discount,
             s.id,
             currency_table.rate"""

@@ -16,8 +16,8 @@ import {
     Component,
     markup,
     onMounted,
+    onPatched,
     onWillDestroy,
-    onWillStart,
     onWillUpdateProps,
     toRaw,
     useChildSubEnv,
@@ -33,12 +33,12 @@ import { useDropdownState } from "@web/core/dropdown/dropdown_hooks";
 import { DropdownItem } from "@web/core/dropdown/dropdown_item";
 import { _t } from "@web/core/l10n/translation";
 import { usePopover } from "@web/core/popover/popover_hook";
-import { user } from "@web/core/user";
 import { useService } from "@web/core/utils/hooks";
 import { url } from "@web/core/utils/urls";
 import { useMessageActions } from "./message_actions";
 import { cookie } from "@web/core/browser/cookie";
 import { rpc } from "@web/core/network/rpc";
+import { escape } from "@web/core/utils/strings";
 
 /**
  * @typedef {Object} Props
@@ -85,6 +85,7 @@ export class Message extends Component {
         "message",
         "messageEdition?",
         "messageToReplyTo?",
+        "previousMessage?",
         "squashed?",
         "thread?",
         "messageSearch?",
@@ -96,6 +97,7 @@ export class Message extends Component {
 
     setup() {
         super.setup();
+        this.escape = escape;
         this.popover = usePopover(this.constructor.components.Popover, { position: "top" });
         this.state = useState({
             isEditing: false,
@@ -108,11 +110,11 @@ export class Message extends Component {
         /** @type {ShadowRoot} */
         this.shadowRoot;
         this.root = useRef("root");
-        onWillStart(() => this.props.registerMessageRef?.(this.props.message, this.root));
         onWillUpdateProps((nextProps) => {
             this.props.registerMessageRef?.(this.props.message, null);
-            this.props.registerMessageRef?.(nextProps.message, this.root);
         });
+        onMounted(() => this.props.registerMessageRef?.(this.props.message, this.root));
+        onPatched(() => this.props.registerMessageRef?.(this.props.message, this.root));
         onWillDestroy(() => this.props.registerMessageRef?.(this.props.message, null));
         this.hasTouch = hasTouch;
         this.messageBody = useRef("body");
@@ -202,6 +204,7 @@ export class Message extends Component {
                 this.props.thread,
                 this.props.message
             ),
+            "o-editing": this.state.isEditing,
         };
     }
 
@@ -319,6 +322,10 @@ export class Message extends Component {
         return Boolean(this.env.inChatWindow && this.props.message.isSelfAuthored);
     }
 
+    get isPersistentMessageFromAnotherThread() {
+        return !this.isOriginThread && !this.message.is_transient && this.message.thread;
+    }
+
     get isOriginThread() {
         if (!this.props.thread) {
             return false;
@@ -410,36 +417,7 @@ export class Message extends Component {
      * @param {MouseEvent} ev
      */
     async onClick(ev) {
-        const model = ev.target.dataset.oeModel;
-        const id = Number(ev.target.dataset.oeId);
-        const store = toRaw(this.store);
-        if (ev.target.closest(".o_channel_redirect")) {
-            ev.preventDefault();
-            const thread = store.Thread.insert({ model, id });
-            thread.open();
-            return;
-        }
-        if (ev.target.closest(".o_mail_redirect")) {
-            ev.preventDefault();
-            const partnerId = Number(ev.target.dataset.oeId);
-            if (user.partnerId !== partnerId) {
-                this.store.openChat({ partnerId });
-            }
-            return;
-        }
-        if (ev.target.tagName === "A") {
-            if (model && id) {
-                ev.preventDefault();
-                await this.env.services.action.doAction({
-                    type: "ir.actions.act_window",
-                    res_model: model,
-                    views: [[false, "form"]],
-                    res_id: id,
-                });
-                if (!this.env.isSmall) {
-                    this.props.thread.open(true, { autofocus: false });
-                }
-            }
+        if (this.store.handleClickOnLink(ev, this.props.thread)) {
             return;
         }
         if (

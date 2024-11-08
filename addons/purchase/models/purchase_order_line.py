@@ -2,7 +2,6 @@
 from datetime import datetime, time
 from dateutil.relativedelta import relativedelta
 from pytz import UTC
-import re
 
 from odoo import api, fields, models, _
 from odoo.tools import DEFAULT_SERVER_DATETIME_FORMAT, get_lang
@@ -323,7 +322,7 @@ class PurchaseOrderLine(models.Model):
         for line in self:
             if not line.product_id or line.invoice_lines or not line.company_id:
                 continue
-            params = {'order_id': line.order_id}
+            params = line._get_select_sellers_params()
             seller = line.product_id._select_seller(
                 partner_id=line.partner_id,
                 quantity=line.product_qty,
@@ -336,6 +335,7 @@ class PurchaseOrderLine(models.Model):
 
             # If not seller, use the standard price. It needs a proper currency conversion.
             if not seller:
+                line.discount = 0
                 unavailable_seller = line.product_id.seller_ids.filtered(
                     lambda s: s.partner_id == line.order_id.partner_id)
                 if not unavailable_seller and line.price_unit and line.product_uom == line._origin.product_uom:
@@ -357,13 +357,13 @@ class PurchaseOrderLine(models.Model):
                     False
                 )
                 line.price_unit = float_round(price_unit, precision_digits=max(line.currency_id.decimal_places, self.env['decimal.precision'].precision_get('Product Price')))
-                continue
 
-            price_unit = line.env['account.tax']._fix_tax_included_price_company(seller.price, line.product_id.supplier_taxes_id, line.taxes_id, line.company_id) if seller else 0.0
-            price_unit = seller.currency_id._convert(price_unit, line.currency_id, line.company_id, line.date_order or fields.Date.context_today(line), False)
-            price_unit = float_round(price_unit, precision_digits=max(line.currency_id.decimal_places, self.env['decimal.precision'].precision_get('Product Price')))
-            line.price_unit = seller.product_uom._compute_price(price_unit, line.product_uom)
-            line.discount = seller.discount or 0.0
+            elif seller:
+                price_unit = line.env['account.tax']._fix_tax_included_price_company(seller.price, line.product_id.supplier_taxes_id, line.taxes_id, line.company_id) if seller else 0.0
+                price_unit = seller.currency_id._convert(price_unit, line.currency_id, line.company_id, line.date_order or fields.Date.context_today(line), False)
+                price_unit = float_round(price_unit, precision_digits=max(line.currency_id.decimal_places, self.env['decimal.precision'].precision_get('Product Price')))
+                line.price_unit = seller.product_uom._compute_price(price_unit, line.product_uom)
+                line.discount = seller.discount or 0.0
 
             # record product names to avoid resetting custom descriptions
             default_names = []
@@ -441,9 +441,8 @@ class PurchaseOrderLine(models.Model):
             price_unit = price_unit * (1 - self.discount / 100)
         if self.taxes_id:
             qty = self.product_qty or 1
-            price_unit_prec = self.env['decimal.precision'].precision_get('Product Price')
-            price_unit = self.taxes_id.with_context(round=False).compute_all(price_unit, currency=self.order_id.currency_id, quantity=qty)['total_void']
-            price_unit = float_round(price_unit / qty, precision_digits=price_unit_prec)
+            price_unit = self.taxes_id.with_context(round=False, round_base=False).compute_all(price_unit, currency=self.order_id.currency_id, quantity=qty)['total_void']
+            price_unit = price_unit / qty
         if self.product_uom.id != self.product_id.uom_id.id:
             price_unit *= self.product_uom.factor / self.product_id.uom_id.factor
         return price_unit
@@ -557,18 +556,9 @@ class PurchaseOrderLine(models.Model):
         aml_currency = move and move.currency_id or self.currency_id
         date = move and move.date or fields.Date.today()
 
-        # Compatibility fix for creating invoices from a SO since the computation of the line name has been changed in the account module.
-        # Has to be removed as soon as the new behavior for the line name has been implemented in the sale module.
-        line_name = self.name
-        if self.product_id.display_name:
-            line_name = re.sub(re.escape(self.product_id.display_name), '', line_name)
-            line_name = re.sub(r'^\n', '', line_name)
-            line_name = re.sub(r'(?<=\n) ', '', line_name)
-            line_name = re.sub(r'P(\d+):(\s*)$', r'P\1', '%s: %s' % (self.order_id.name, line_name))
-
         res = {
             'display_type': self.display_type or 'product',
-            'name': line_name,
+            'name': self.env['account.move.line']._get_journal_items_full_name(self.name, self.product_id.display_name),
             'product_id': self.product_id.id,
             'product_uom_id': self.product_uom.id,
             'quantity': self.qty_to_invoice,
@@ -679,4 +669,10 @@ class PurchaseOrderLine(models.Model):
             'res_model': 'purchase.order',
             'res_id': self.order_id.id,
             'view_mode': 'form',
+        }
+
+    def _get_select_sellers_params(self):
+        self.ensure_one()
+        return {
+            "order_id": self.order_id,
         }

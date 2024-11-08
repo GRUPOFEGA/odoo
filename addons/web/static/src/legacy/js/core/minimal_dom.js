@@ -97,7 +97,7 @@ export function makeButtonHandler(fct, preventDefault, stopPropagation, stopImme
         new Promise(resolve => setTimeout(resolve, DEBOUNCE)).then(() => {
             buttonEl.classList.remove("pe-none");
             const restore = addLoadingEffect(buttonEl);
-            return Promise.resolve(result).finally(restore);
+            return Promise.resolve(result).then(restore, restore);
         });
 
         return result;

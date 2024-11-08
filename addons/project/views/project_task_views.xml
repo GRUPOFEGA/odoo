@@ -58,7 +58,7 @@
                     <field name="user_ids" filter_domain="[('user_ids.name', 'ilike', self), ('user_ids.active', 'in', [True, False])]"/>
                 </field>
                 <field name="stage_id" position="after">
-                    <field name="project_id" string="Project" invisible="context.get('default_project_id')"/>
+                    <field name="project_id" string="Project"/>
                 </field>
                 <field name="partner_id" position="after">
                     <field name="company_id" groups="base.group_multi_company"/>
@@ -68,7 +68,7 @@
                     <filter string="Assignees" name="user" context="{'group_by': 'user_ids'}"/>
                 </filter>
                 <filter name="stage" position="after">
-                    <filter string="Project" name="project" context="{'group_by': 'project_id'}" invisible="context.get('default_project_id')"/>
+                    <filter string="Project" name="project" context="{'group_by': 'project_id'}"/>
                 </filter>
             </field>
         </record>
@@ -85,8 +85,8 @@
                     <filter string="Deadline" name="date_deadline" date="date_deadline">
                         <filter name="deadline_future" string="Future" domain="[('date_deadline', '&gt;', datetime.datetime.combine(context_today(), datetime.time(23,59,59)).to_utc())]"/>
                         <filter name="deadline_this_week" string="This Week" domain="[
-                            ('date_deadline', '&gt;=', datetime.datetime.combine(context_today() + relativedelta(weeks=-1,weekday=0), datetime.time(0,0,0)).to_utc()),
-                            ('date_deadline', '&lt;', datetime.datetime.combine(context_today() + relativedelta(weekday=0), datetime.time(0,0,0)).to_utc()),
+                            ('date_deadline', '&gt;=', datetime.datetime.combine(context_today() + relativedelta(weeks=-1,days=1,weekday=0), datetime.time(0,0,0)).to_utc()),
+                            ('date_deadline', '&lt;', datetime.datetime.combine(context_today() + relativedelta(days=1,weekday=0), datetime.time(0,0,0)).to_utc()),
                         ]"/>
                         <filter name="deadline_today" string="Today" domain="[
                             ('date_deadline', '&gt;=', datetime.datetime.combine(context_today(), datetime.time(0,0,0)).to_utc()),
@@ -140,6 +140,8 @@
                 <graph string="Tasks" sample="1" js_class="project_task_graph">
                     <field name="project_id" invisible="context.get('default_project_id', False)"/>
                     <field name="stage_id"/>
+                    <field name="working_hours_open" widget="float_time"/>
+                    <field name="working_hours_close" widget="float_time"/>
                     <field name="color" invisible="1"/>
                     <field name="sequence" invisible="1"/>
                     <field name="rating_last_value" string="Rating (/5)"/>
@@ -204,6 +206,7 @@
             <field name="view_mode">kanban,tree,form,calendar,pivot,graph,activity</field>
             <field name="domain">[('project_id', '=', active_id), ('display_in_project', '=', True)]</field>
             <field name="context">{
+                'active_model': 'project.project',
                 'default_project_id': active_id,
                 'show_project_update': True,
                 'search_default_open_tasks': 1,
@@ -427,7 +430,7 @@
                             <field name="partner_id" nolabel="0" widget="res_partner_many2one" class="o_task_customer_field" invisible="not project_id"/>
                             <label for="date_deadline"/>
                             <div id="date_deadline_and_recurring_task" class="d-inline-flex w-100">
-                                <field name="date_deadline" nolabel="1" decoration-danger="date_deadline &lt; current_date and state not in ['1_done', '1_canceled']"/>
+                                <field name="date_deadline" nolabel="1" decoration-danger="date_deadline and date_deadline &lt; current_date and state not in ['1_done', '1_canceled']"/>
                                 <field name="recurring_task" nolabel="1" class="ms-0" style="width: fit-content;"
                                        widget="boolean_icon" options="{'icon': 'fa-repeat'}"
                                        invisible="not active or parent_id"
@@ -487,7 +490,7 @@
                                     <field name="user_ids" widget="many2many_avatar_user" optional="show"/>
                                     <field name="company_id" groups="base.group_multi_company" optional="hide"/>
                                     <field name="company_id" column_invisible="True"/>
-                                    <field name="date_deadline" invisible="state in ['1_done', '1_canceled']" optional="hide" decoration-danger="date_deadline &lt; current_date"/>
+                                    <field name="date_deadline" invisible="state in ['1_done', '1_canceled']" optional="hide" decoration-danger="date_deadline and date_deadline &lt; current_date"/>
                                     <field name="activity_ids" string="Next Activity" widget="list_activity" optional="hide"/>
                                      <field name="my_activity_date_deadline" string="My Deadline" widget="remaining_days" options="{'allow_order': '1'}" optional="hide"/>
                                     <field name="rating_last_text" string="Rating" decoration-danger="rating_last_text == 'ko'"
@@ -530,7 +533,7 @@
                                     <field name="user_ids" widget="many2many_avatar_user" optional="show"/>
                                     <field name="company_id" optional="hide" groups="base.group_multi_company" />
                                     <field name="company_id" column_invisible="True"/>
-                                    <field name="date_deadline" invisible="state in ['1_done', '1_canceled']" optional="hide" decoration-danger="date_deadline &lt; current_date"/>
+                                    <field name="date_deadline" invisible="state in ['1_done', '1_canceled']" optional="hide" decoration-danger="date_deadline and date_deadline &lt; current_date"/>
                                     <field name="activity_ids" string="Next Activity" widget="list_activity" optional="hide"/>
                                     <field name="my_activity_date_deadline" string="My Deadline" widget="remaining_days" options="{'allow_order': '1'}" optional="hide"/>
                                     <field name="rating_last_text" string="Rating" decoration-danger="rating_last_text == 'ko'"
@@ -966,7 +969,7 @@
                     <attribute name="default_group_by"/>
                 </tree>
                 <field name="project_id" position="attributes">
-                    <attribute name="invisible">0</attribute>
+                    <attribute name="column_invisible">0</attribute>
                 </field>
             </field>
         </record>

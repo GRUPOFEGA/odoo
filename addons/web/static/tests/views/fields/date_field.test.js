@@ -1,5 +1,5 @@
 import { expect, test } from "@odoo/hoot";
-import { queryAll, queryOne, scroll } from "@odoo/hoot-dom";
+import { queryOne, scroll } from "@odoo/hoot-dom";
 import { animationFrame, mockDate, mockTimeZone } from "@odoo/hoot-mock";
 import { getPickerCell, zoomOut } from "@web/../tests/core/datetime/datetime_test_helpers";
 import {
@@ -18,7 +18,7 @@ import {
 class Partner extends models.Model {
     _name = "res.partner";
 
-    date = fields.Date({ string: "Date" });
+    date = fields.Date();
     char_field = fields.Char({ string: "Char" });
 
     _records = [
@@ -207,7 +207,7 @@ test("date field with warn_future option ", async () => {
 });
 
 test("date field with warn_future option: do not overwrite datepicker option", async () => {
-    Partner._fields.date = fields.Date({ string: "Date", default: undefined, onChange: () => {} });
+    Partner._onChanges.date = () => {};
 
     await mountView({
         type: "form",
@@ -277,10 +277,9 @@ test.tags("desktop")("multi edition of date field in list view: clear date in in
             </tree>`,
     });
 
-    const rows = queryAll(".o_data_row");
-    await contains(".o_list_record_selector input", { root: rows[0] }).click();
-    await contains(".o_list_record_selector input", { root: rows[1] }).click();
-    await contains(".o_data_cell", { root: rows[0] }).click();
+    await contains(".o_data_row:eq(0) .o_list_record_selector input").click();
+    await contains(".o_data_row:eq(1) .o_list_record_selector input").click();
+    await contains(".o_data_row:eq(0) .o_data_cell").click();
 
     expect(".o_field_date input").toHaveCount(1);
     await fieldInput("date").clear();
@@ -361,10 +360,7 @@ test("hit enter should update value", async () => {
 test("allow to use compute dates (+5d for instance)", async () => {
     mockDate({ year: 2021, month: 2, day: 15 });
 
-    Partner._fields.date = fields.Date({
-        string: "Date",
-        default: "2019-09-15",
-    });
+    Partner._fields.date.default = "2019-09-15";
     await mountView({ type: "form", resModel: "res.partner" });
 
     expect(".o_field_date input").toHaveValue("09/15/2019");

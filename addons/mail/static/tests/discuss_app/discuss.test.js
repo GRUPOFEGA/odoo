@@ -27,11 +27,13 @@ import {
     makeKwArgs,
     mockService,
     onRpc,
+    patchWithCleanup,
     serverState,
     withUser,
 } from "@web/../tests/web_test_helpers";
 
 import { rpc } from "@web/core/network/rpc";
+import { OutOfFocusService } from "@mail/core/common/out_of_focus_service";
 
 describe.current.tags("desktop");
 defineMailModels();
@@ -496,6 +498,39 @@ test("receive new needaction messages", async () => {
     await contains(".o-mail-Message", { count: 2 });
     await contains(".o-mail-Message-content", { text: "not empty 1" });
     await contains(".o-mail-Message-content", { text: "not empty 2" });
+});
+
+test("receive a message that is not linked to thread", async () => {
+    const pyEnv = await startServer();
+    const partnerId = pyEnv["res.partner"].create({ name: "Frodo Baggins" });
+    await start();
+    await openDiscuss();
+    await contains("button.o-active", { text: "Inbox", contains: [".badge", { count: 0 }] });
+    await contains(".o-mail-Thread .o-mail-Message", { count: 0 });
+    // simulate receiving a new needaction message that is not linked to thread
+    const messageId_1 = pyEnv["mail.message"].create({
+        author_id: partnerId,
+        body: "needaction message",
+        needaction: true,
+    });
+    pyEnv["mail.notification"].create({
+        mail_message_id: messageId_1,
+        notification_status: "sent",
+        notification_type: "inbox",
+        res_partner_id: serverState.partnerId,
+    });
+    const [partner] = pyEnv["res.partner"].read(serverState.partnerId);
+    pyEnv["bus.bus"]._sendone(
+        partner,
+        "mail.message/inbox",
+        new mailDataHelpers.Store(
+            pyEnv["mail.message"].browse(messageId_1),
+            makeKwArgs({ for_current_user: true, add_followers: true })
+        ).get_result()
+    );
+    await contains("button", { text: "Inbox", contains: [".badge", { text: "1" }] });
+    await contains(".o-mail-Message");
+    await contains(".o-mail-Message-content", { text: "needaction message" });
 });
 
 test("basic rendering", async () => {
@@ -1022,9 +1057,9 @@ test("no out-of-focus notification on receiving self messages in chat", async ()
     const channelId = pyEnv["discuss.channel"].create({ channel_type: "chat" });
     mockService("presence", { isOdooFocused: () => false });
     mockService("title", {
-        setParts(parts) {
-            if (parts._chat) {
-                step("set_title_part");
+        setCounters(counters) {
+            if (counters.discuss) {
+                step("set_counters:discuss");
             }
         },
     });
@@ -1061,9 +1096,9 @@ test("out-of-focus notif on needaction message in channel", async () => {
     });
     mockService("presence", { isOdooFocused: () => false });
     mockService("title", {
-        setParts(parts) {
-            if (parts._chat) {
-                step(`set_title_part:${parts._chat}`);
+        setCounters(counters) {
+            if (counters.discuss) {
+                step(`set_counters:discuss:${counters.discuss}`);
             }
         },
     });
@@ -1078,7 +1113,7 @@ test("out-of-focus notif on needaction message in channel", async () => {
     await assertSteps(["init_messaging"]);
     // simulate receiving a new needaction message with odoo out-of-focused
     const adminId = serverState.partnerId;
-    withUser(userId, () =>
+    await withUser(userId, () =>
         rpc("/mail/message/post", {
             post_data: {
                 body: "@Michell Admin",
@@ -1090,7 +1125,7 @@ test("out-of-focus notif on needaction message in channel", async () => {
         })
     );
     await contains(".o-mail-ChatBubble");
-    await assertSteps(["set_title_part:1 Message"]);
+    await assertSteps(["set_counters:discuss:1"]);
 });
 
 test("receive new chat message: out of odoo focus (notification, chat)", async () => {
@@ -1106,9 +1141,9 @@ test("receive new chat message: out of odoo focus (notification, chat)", async (
     });
     mockService("presence", { isOdooFocused: () => false });
     mockService("title", {
-        setParts(parts) {
-            if (parts._chat) {
-                step(`set_title_part:${parts._chat}`);
+        setCounters(counters) {
+            if (counters.discuss) {
+                step(`set_counters:discuss:${counters.discuss}`);
             }
         },
     });
@@ -1133,7 +1168,7 @@ test("receive new chat message: out of odoo focus (notification, chat)", async (
         })
     );
     await contains(".o-mail-ChatBubble");
-    await assertSteps(["set_title_part:1 Message"]);
+    await assertSteps(["set_counters:discuss:1"]);
 });
 
 test("no out-of-focus notif on non-needaction message in channel", async () => {
@@ -1149,9 +1184,9 @@ test("no out-of-focus notif on non-needaction message in channel", async () => {
     });
     mockService("presence", { isOdooFocused: () => false });
     mockService("title", {
-        setParts(parts) {
-            if (parts._chat) {
-                step("set_title_part");
+        setCounters(counters) {
+            if (counters.discuss) {
+                step("set_counters:discuss");
             }
         },
     });
@@ -1201,20 +1236,20 @@ test("receive new chat messages: out of odoo focus (tab title)", async () => {
     ]);
     mockService("presence", { isOdooFocused: () => false });
     mockService("title", {
-        setParts(parts) {
-            if (!parts._chat) {
+        setCounters(counters) {
+            if (!counters.discuss) {
                 return;
             }
             stepCount++;
-            step("set_title_part");
+            step("set_counters:discuss");
             if (stepCount === 1) {
-                expect(parts._chat).toBe("1 Message");
+                expect(counters.discuss).toBe(1);
             }
             if (stepCount === 2) {
-                expect(parts._chat).toBe("2 Messages");
+                expect(counters.discuss).toBe(2);
             }
             if (stepCount === 3) {
-                expect(parts._chat).toBe("3 Messages");
+                expect(counters.discuss).toBe(3);
             }
         },
     });
@@ -1229,7 +1264,7 @@ test("receive new chat messages: out of odoo focus (tab title)", async () => {
             thread_model: "discuss.channel",
         })
     );
-    await assertSteps(["set_title_part"]);
+    await assertSteps(["set_counters:discuss"]);
     // simulate receiving a new message in chat 2 with odoo out-of-focused
     await withUser(bobUserId, () =>
         rpc("/mail/message/post", {
@@ -1238,7 +1273,7 @@ test("receive new chat messages: out of odoo focus (tab title)", async () => {
             thread_model: "discuss.channel",
         })
     );
-    await assertSteps(["set_title_part"]);
+    await assertSteps(["set_counters:discuss"]);
     // simulate receiving another new message in chat 2 with odoo focused
     await withUser(bobUserId, () =>
         rpc("/mail/message/post", {
@@ -1247,7 +1282,158 @@ test("receive new chat messages: out of odoo focus (tab title)", async () => {
             thread_model: "discuss.channel",
         })
     );
-    await assertSteps(["set_title_part"]);
+    await assertSteps(["set_counters:discuss"]);
+});
+
+test("new message in tab title has precedence over action name", async () => {
+    const pyEnv = await startServer();
+    const bobUserId = pyEnv["res.users"].create({ name: "bob" });
+    const bobPartnerId = pyEnv["res.partner"].create({ name: "bob", user_ids: [bobUserId] });
+    const channelId = pyEnv["discuss.channel"].create({
+        channel_type: "chat",
+        channel_member_ids: [
+            Command.create({ partner_id: serverState.partnerId }),
+            Command.create({ partner_id: bobPartnerId }),
+        ],
+    });
+    mockService("presence", { isOdooFocused: () => false });
+    await start();
+    await openDiscuss();
+    await contains(".o_breadcrumb:contains(Inbox)"); // wait for action name being Inbox
+    const titleService = getService("title");
+    expect(titleService.current).toBe("Inbox");
+    // simulate receiving a new message in chat 1 with odoo out-of-focused
+    await withUser(bobUserId, () =>
+        rpc("/mail/message/post", {
+            post_data: { body: "Hello world!", message_type: "comment" },
+            thread_id: channelId,
+            thread_model: "discuss.channel",
+        })
+    );
+    await contains(".o_notification:contains(Hello World!)");
+    expect(titleService.current).toBe("(1) Inbox");
+});
+
+test("out-of-focus notif takes new inbox messages into account", async () => {
+    const pyEnv = await startServer();
+    pyEnv["res.users"].write(serverState.userId, { notification_type: "inbox" });
+    const partnerId = pyEnv["res.partner"].create({ name: "Dumbledore" });
+    const userId = pyEnv["res.users"].create({ partner_id: partnerId });
+    mockService("presence", { isOdooFocused: () => false });
+    onRpcBefore("/mail/action", async (args) => {
+        if (args.init_messaging) {
+            step("init_messaging");
+        }
+    });
+    await start();
+    await openDiscuss();
+    const titleService = getService("title");
+    await assertSteps(["init_messaging"]);
+    // simulate receiving a new needaction message with odoo out-of-focused
+    const adminId = serverState.partnerId;
+    await withUser(userId, () =>
+        rpc("/mail/message/post", {
+            post_data: {
+                body: "@Michell Admin",
+                partner_ids: [adminId],
+                message_type: "comment",
+            },
+            thread_id: partnerId,
+            thread_model: "res.partner",
+        })
+    );
+    await contains(".o-mail-DiscussSidebar-item:has(.badge:contains(1))", { text: "Inbox" });
+    expect(titleService.current).toBe("(1) Inbox");
+});
+
+test("out-of-focus notif on needaction message in group chat contributes only once", async () => {
+    const pyEnv = await startServer();
+    pyEnv["res.users"].write(serverState.userId, { notification_type: "inbox" });
+    const partnerId = pyEnv["res.partner"].create({ name: "Dumbledore" });
+    const userId = pyEnv["res.users"].create({ partner_id: partnerId });
+    const channelId = pyEnv["discuss.channel"].create({
+        channel_member_ids: [
+            Command.create({ partner_id: serverState.partnerId }),
+            Command.create({ partner_id: partnerId }),
+        ],
+        channel_type: "group",
+    });
+    mockService("presence", { isOdooFocused: () => false });
+    onRpcBefore("/mail/action", async (args) => {
+        if (args.init_messaging) {
+            step("init_messaging");
+        }
+    });
+    await start();
+    await openDiscuss();
+    const titleService = getService("title");
+    await assertSteps(["init_messaging"]);
+    // simulate receiving a new needaction message with odoo out-of-focused
+    const adminId = serverState.partnerId;
+    await withUser(userId, () =>
+        rpc("/mail/message/post", {
+            post_data: {
+                body: "@Michell Admin",
+                partner_ids: [adminId],
+                message_type: "comment",
+            },
+            thread_id: channelId,
+            thread_model: "discuss.channel",
+        })
+    );
+    await contains(".o-mail-DiscussSidebar-item:has(.badge:contains(1))", { text: "Inbox" });
+    await contains(".o-mail-DiscussSidebar-item:has(.badge:contains(1))", {
+        text: "Mitchell Admin and Dumbledore",
+    });
+    await contains(".o_notification", { count: 1 });
+    expect(titleService.current).toBe("(1) Inbox");
+});
+
+test("inbox notifs shouldn't play sound nor open chat bubble", async () => {
+    const pyEnv = await startServer();
+    pyEnv["res.users"].write(serverState.userId, { notification_type: "inbox" });
+    const partnerId = pyEnv["res.partner"].create({ name: "Dumbledore" });
+    const userId = pyEnv["res.users"].create({ partner_id: partnerId });
+    pyEnv["discuss.channel"].create({
+        name: "general",
+        channel_member_ids: [Command.create({ partner_id: serverState.partnerId })],
+        channel_type: "channel",
+    });
+    mockService("presence", { isOdooFocused: () => false });
+    onRpcBefore("/mail/action", async (args) => {
+        if (args.init_messaging) {
+            step("init_messaging");
+        }
+    });
+    patchWithCleanup(OutOfFocusService.prototype, {
+        _playSound() {
+            step("play_sound");
+        },
+    });
+    await start();
+    await assertSteps(["init_messaging"]);
+    // simulate receiving a new needaction message with odoo out-of-focused
+    const adminId = serverState.partnerId;
+    await withUser(userId, () =>
+        rpc("/mail/message/post", {
+            post_data: {
+                body: "@Michell Admin",
+                partner_ids: [adminId],
+                message_type: "comment",
+            },
+            thread_id: partnerId,
+            thread_model: "res.partner",
+        })
+    );
+    await contains(".o-mail-MessagingMenu-counter", { text: "1" });
+    // check no chat window nor chat bubble spawn: can be delayed, hence opening and folding chat by hand
+    await click("button.dropdown i[aria-label='Messages']");
+    await click(".o-mail-MessagingMenu button:contains(general)");
+    await contains(".o-mail-ChatWindow:contains(general)");
+    await contains(".o-mail-ChatWindow", { count: 1 });
+    await click(".o-mail-ChatWindow button[title='Fold']");
+    await contains(".o-mail-ChatBubble", { count: 1 }); // no other chat bubble other than manually folded one
+    await assertSteps([]); // no sound alert whatsoever
 });
 
 test("should auto-pin chat when receiving a new DM", async () => {
@@ -1427,6 +1613,29 @@ test("Thread avatar image is displayed in top bar of channels of type 'group'", 
     await contains(".o-mail-Discuss-header .o-mail-Discuss-threadAvatar");
 });
 
+test("Thread avatar is not editable in DM chat", async () => {
+    const pyEnv = await startServer();
+    const demoUid = pyEnv["res.users"].create({ name: "Demo" });
+    const demoPid = pyEnv["res.partner"].create({ name: "Demo", user_ids: [demoUid] });
+    const [groupChatId] = pyEnv["discuss.channel"].create([
+        { channel_type: "group", name: "GroupChat" },
+        {
+            channel_member_ids: [
+                Command.create({ partner_id: serverState.partnerId }),
+                Command.create({ partner_id: demoPid }),
+            ],
+            channel_type: "chat",
+        },
+    ]);
+    await start();
+    await openDiscuss(groupChatId);
+    await contains(".o-mail-Discuss-threadName[title='GroupChat']");
+    await contains(".o-mail-Discuss-threadAvatar .fa-pencil");
+    await click(".o-mail-DiscussSidebar-item:contains('Demo')");
+    await contains(".o-mail-Discuss-threadName[title='Demo']");
+    await contains(".o-mail-Discuss-threadAvatar .fa-pencil", { count: 0 });
+});
+
 test("Do not trigger chat name server update when it is unchanged", async () => {
     const pyEnv = await startServer();
     const channelId = pyEnv["discuss.channel"].create({ channel_type: "chat" });
@@ -1563,10 +1772,7 @@ test("mark channel as seen if last message is visible when switching channels wh
 test("warning on send with shortcut when attempting to post message with still-uploading attachments", async () => {
     const pyEnv = await startServer();
     const channelId = pyEnv["discuss.channel"].create({ name: "test" });
-    onRpcBefore("/mail/attachment/upload", async (args) => {
-        // simulates attachment is never finished uploading
-        await new Deferred();
-    });
+    onRpcBefore("/mail/attachment/upload", async () => await new Deferred()); // simulates attachment is never finished uploading
     await start();
     await openDiscuss(channelId);
     await contains(".o-mail-Composer input[type=file]");
@@ -1575,15 +1781,14 @@ test("warning on send with shortcut when attempting to post message with still-u
         contentType: "text/plain",
         name: "text.txt",
     });
+    await insertText(".o-mail-Composer-input", "Dummy Message");
     await editInput(document.body, ".o-mail-Composer input[type=file]", [file]);
     await contains(".o-mail-AttachmentCard");
-    await contains(".o-mail-AttachmentCard.o-isUploading");
+    await contains(".o-mail-AttachmentCard .fa.fa-spinner");
     await contains(".o-mail-Composer-send:disabled");
     // Try to send message
     triggerHotkey("Enter");
-    await contains(".o_notification:has(.o_notification_bar.bg-warning)", {
-        text: "Please wait while the file is uploading.",
-    });
+    await contains(".o_notification", { text: "Please wait while the file is uploading." });
 });
 
 test("failure on loading messages should display error", async () => {

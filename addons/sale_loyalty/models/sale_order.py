@@ -231,12 +231,20 @@ class SaleOrder(models.Model):
             # non-fixed tax totals. This way fixed taxes will not be discounted
             taxes = line.tax_id.filtered(lambda t: t.amount_type != 'fixed')
             discountable += tax_data['total_excluded'] + sum(
-                tax['amount'] for tax in tax_data['taxes'] if tax['id'] in taxes.ids
+                tax['amount'] for tax in tax_data['taxes']
+                if (
+                    tax['id'] in taxes.ids
+                    or (tax['group'] and tax['group'] in taxes)
+                )
             )
             line_price = line.price_unit * line.product_uom_qty * (1 - (line.discount or 0.0) / 100)
             discountable_per_tax[taxes] += line_price - sum(
                 tax['amount'] for tax in tax_data['taxes']
-                if tax['price_include'] and tax['id'] not in taxes.ids
+                if (
+                    tax['price_include']
+                    and tax['id'] not in taxes.ids
+                    and (not tax['group'] or tax['group'] not in taxes)
+                )
             )
         return discountable, discountable_per_tax
 
@@ -460,7 +468,7 @@ class SaleOrder(models.Model):
                 continue
             mapped_taxes = self.fiscal_position_id.map_tax(tax)
             tax_desc = ''
-            if any(t.name for t in mapped_taxes):
+            if len(discountable_per_tax) > 1 and any(t.name for t in mapped_taxes):
                 tax_desc = _(
                     ' - On product with the following taxes: %(taxes)s',
                     taxes=", ".join(mapped_taxes.mapped('name')),
@@ -495,7 +503,7 @@ class SaleOrder(models.Model):
         self.ensure_one()
         today = fields.Date.context_today(self)
         return [('active', '=', True), ('sale_ok', '=', True),
-                ('company_id', 'in', (self.company_id.id, False)),
+                *self.env['loyalty.program']._check_company_domain([self.company_id.id, self.company_id.parent_id.id]),
                 '|', ('pricelist_ids', '=', False), ('pricelist_ids', 'in', [self.pricelist_id.id]),
                 '|', ('date_from', '=', False), ('date_from', '<=', today),
                 '|', ('date_to', '=', False), ('date_to', '>=', today)]
@@ -507,7 +515,7 @@ class SaleOrder(models.Model):
         self.ensure_one()
         today = fields.Date.context_today(self)
         return [('active', '=', True), ('program_id.sale_ok', '=', True),
-                ('company_id', 'in', (self.company_id.id, False)),
+                *self.env['loyalty.program']._check_company_domain([self.company_id.id, self.company_id.parent_id.id]),
                 '|', ('program_id.pricelist_ids', '=', False),
                      ('program_id.pricelist_ids', 'in', [self.pricelist_id.id]),
                 '|', ('program_id.date_from', '=', False), ('program_id.date_from', '<=', today),
@@ -764,6 +772,7 @@ class SaleOrder(models.Model):
         all_coupons = forced_coupons or (self.coupon_point_ids.coupon_id | self.order_line.coupon_id | self.applied_coupon_ids)
         has_payment_reward = any(line.reward_id.program_id.is_payment_program for line in self.order_line)
         global_discount_reward = self._get_applied_global_discount()
+        active_products_domain = self.env['loyalty.reward']._get_active_products_domain()
         discountable = lazy(lambda: self._discountable_amount(global_discount_reward))
 
         total_is_zero = self.currency_id.is_zero(discountable)
@@ -781,7 +790,16 @@ class SaleOrder(models.Model):
                     continue
                 # Discounts are not allowed if the total is zero unless there is a payment reward, in which case we allow discounts.
                 # If the total is 0 again without the payment reward it will be removed.
-                if reward.reward_type == 'discount' and total_is_zero and (not has_payment_reward or reward.program_id.is_payment_program):
+                is_discount = reward.reward_type == 'discount'
+                is_payment_program = reward.program_id.is_payment_program
+                if is_discount and total_is_zero and (not has_payment_reward or is_payment_program):
+                    continue
+                # Skip discount that has already been applied if not part of a payment program
+                if is_discount and not is_payment_program and reward in self.order_line.reward_id:
+                    continue
+                if reward.reward_type == 'product' and not reward.filtered_domain(
+                    active_products_domain
+                ):
                     continue
                 if points >= reward.required_points:
                     result[coupon] |= reward

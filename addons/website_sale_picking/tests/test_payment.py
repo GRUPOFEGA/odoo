@@ -1,9 +1,12 @@
+# Part of Odoo. See LICENSE file for full copyright and licensing details.
+
+from odoo.tests import HttpCase, tagged
+
 from odoo.addons.website_sale_picking.tests.common import OnsiteCommon
-from odoo.tests import tagged
 
 
 @tagged('post_install', '-at_install')
-class TestOnsitePayment(OnsiteCommon):
+class TestOnsitePayment(HttpCase, OnsiteCommon):
 
     def test_onsite_provider_available_when_onsite_delivery_is_chosen(self):
         order = self._create_so()

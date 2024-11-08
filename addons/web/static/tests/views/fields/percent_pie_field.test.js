@@ -6,19 +6,10 @@ class Partner extends models.Model {
     foo = fields.Char({
         string: "Foo",
         default: "My little Foo Value",
-        searchable: true,
         trim: true,
     });
-    int_field = fields.Integer({
-        string: "int_field",
-        sortable: true,
-        searchable: true,
-    });
-    float_field = fields.Float({
-        string: "float_field",
-        sortable: true,
-        searchable: true,
-    });
+    int_field = fields.Integer();
+    float_field = fields.Float();
     _records = [
         { id: 1, foo: "yop", int_field: 10 },
         { id: 2, foo: "gnap", int_field: 80 },
@@ -118,4 +109,42 @@ test("PercentPieField in form view with float value", async () => {
         "conic-gradient( var(--PercentPieField-color-active) 0% 33.3333%, var(--PercentPieField-color-static) 0% 100% )",
         { message: "pie should have a background computed for its value of 33.3333%" }
     );
+});
+
+test("hide the string when the PercentPieField widget is used in the view", async () => {
+    await mountView({
+        type: "form",
+        resModel: "partner",
+        arch: /* xml */ `
+                <form>
+                    <sheet>
+                        <group>
+                            <field name="int_field" widget="percentpie"/>
+                        </group>
+                    </sheet>
+                </form>`,
+        resId: 1,
+    });
+
+    expect(".o_field_percent_pie.o_field_widget .o_pie").toHaveCount(1);
+    expect(".o_field_percent_pie.o_field_widget .o_pie_info .o_pie_text").not.toBeVisible();
+});
+
+test("show the string when the PercentPieField widget is used in a button with the class oe_stat_button", async () => {
+    await mountView({
+        type: "form",
+        resModel: "partner",
+        arch: /* xml */ `
+               <form>
+                    <div name="button_box" class="oe_button_box">
+                        <button type="object" class="oe_stat_button">
+                            <field name="int_field" widget="percentpie"/>
+                        </button>
+                    </div>
+                </form>`,
+        resId: 1,
+    });
+
+    expect(".o_field_percent_pie.o_field_widget .o_pie").toHaveCount(1);
+    expect(".o_field_percent_pie.o_field_widget .o_pie_info .o_pie_text").toBeVisible();
 });

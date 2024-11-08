@@ -18,7 +18,7 @@
 
 <t t-name="mail.MessagingMenu.content">
     <div t-if="!(ui.isSmall and env.inDiscussApp and store.discuss.activeTab === 'main')" t-att-class="`${discussSystray.contentClass} o-mail-MessagingMenu`">
-        <div class="o-mail-MessagingMenu-header d-flex" t-att-class="{'text-uppercase border-start-0 border-end-0': ui.isSmall, 'bg-view border-bottom': !ui.isSmall, 'flex-shrink-0': !env.inDiscussApp }">
+        <div class="o-mail-MessagingMenu-header d-flex" t-att-class="{'border-start-0 border-end-0': ui.isSmall, 'bg-view border-bottom': !ui.isSmall, 'flex-shrink-0': !env.inDiscussApp }">
             <t t-if="!ui.isSmall">
                 <button class="btn btn-link py-1 rounded-0" t-att-class="store.discuss.activeTab === 'main' ? 'fw-bold o-active' : 'text-muted'" type="button" role="tab" t-on-click="() => store.discuss.activeTab = 'main'">All</button>
                 <button class="btn btn-link py-1 rounded-0" t-att-class="store.discuss.activeTab === 'chat' ? 'fw-bold o-active' : 'text-muted'" type="button" role="tab" t-on-click="() => store.discuss.activeTab = 'chat'">Chats</button>
@@ -105,7 +105,7 @@
         </div>
     </div>
     <div t-if="ui.isSmall" class="o-mail-MessagingMenu-navbar d-flex border-top bg-view shadow-lg w-100 btn-group">
-        <button t-foreach="tabs" t-key="tab.id" t-as="tab" class="o-mail-MessagingMenu-tab btn d-flex flex-column align-items-center flex-grow-1 flex-basis-0 p-2 mx-0" t-att-class="{
+        <button t-foreach="tabs" t-key="tab.id" t-as="tab" class="o-mail-MessagingMenu-tab btn d-flex flex-column align-items-center flex-grow-1 flex-basis-0 p-2 mx-0 pb-4" t-att-class="{
             'text-primary fw-bolder o-active': store.discuss.activeTab === tab.id,
             'border-end': !tab_last,
         }" t-on-click="() => this.onClickNavTab(tab.id)">

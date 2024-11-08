@@ -113,7 +113,8 @@ class StockQuant(models.Model):
     inventory_quantity_set = fields.Boolean(store=True, compute='_compute_inventory_quantity_set', readonly=False, default=False)
     is_outdated = fields.Boolean('Quantity has been moved since last count', compute='_compute_is_outdated', search='_search_is_outdated')
     user_id = fields.Many2one(
-        'res.users', 'Assigned To', help="User assigned to do product count.")
+        'res.users', 'Assigned To', help="User assigned to do product count.",
+        domain=lambda self: [('groups_id', 'in', self.env.ref('stock.group_stock_user').id)])
 
     @api.depends('quantity', 'reserved_quantity')
     def _compute_available_quantity(self):
@@ -244,6 +245,9 @@ class StockQuant(models.Model):
             domain_operator = 'in'
         return [('id', domain_operator, quant_query)]
 
+    def copy(self, default=None):
+        raise UserError(_('You cannot duplicate stock quants.'))
+
     @api.model_create_multi
     def create(self, vals_list):
         """ Override to handle the "inventory mode" and create a quant as
@@ -276,6 +280,13 @@ class StockQuant(models.Model):
                     # Merge quants later, to make sure one line = one record during batch import
                     quant = self._gather(product, location, lot_id=lot_id, package_id=package_id, owner_id=owner_id, strict=True)
                 if lot_id:
+                    if self.env.context.get('import_file') and lot_id.product_id != product:
+                        lot_name = lot_id.name
+                        lot_id = self.env['stock.lot'].search([('product_id', '=', product.id), ('name', '=', lot_name)], limit=1)
+                        if not lot_id:
+                            company_id = location.company_id or self.env.company
+                            lot_id = self.env['stock.lot'].create({'name': lot_name, 'product_id': product.id, 'company_id': company_id.id})
+                        vals['lot_id'] = lot_id.id
                     quant = quant.filtered(lambda q: q.lot_id)
                 if quant:
                     quant = quant[0].sudo()
@@ -606,6 +617,12 @@ class StockQuant(models.Model):
         for quant in self:
             if quant.location_id.usage == 'view':
                 raise ValidationError(_('You cannot take products from or deliver products to a location of type "view" (%s).', quant.location_id.name))
+
+    @api.constrains('lot_id')
+    def check_lot_id(self):
+        for quant in self:
+            if quant.lot_id.product_id and quant.lot_id.product_id != quant.product_id:
+                raise ValidationError(_('The Lot/Serial number (%s) is linked to another product.', quant.location_id.name))
 
     @api.model
     def _get_removal_strategy(self, product_id, location_id):
@@ -1613,3 +1630,28 @@ class QuantPackage(models.Model):
                 or any(not float_is_zero(grouped_ops.get(key, 0) - grouped_quants.get(key, 0), precision_digits=precision_digits) for key in grouped_ops):
             return False
         return True
+
+    def _get_weight(self, picking_id=False):
+        res = {}
+        if picking_id:
+            package_weights = defaultdict(float)
+            res_groups = self.env['stock.move.line']._read_group(
+                [('result_package_id', 'in', self.ids), ('product_id', '!=', False), ('picking_id', '=', picking_id)],
+                ['result_package_id', 'product_id', 'product_uom_id', 'quantity'],
+                ['__count'],
+            )
+            for result_package, product, product_uom, quantity, count in res_groups:
+                package_weights[result_package.id] += (
+                    count
+                    * product_uom._compute_quantity(quantity, product.uom_id)
+                    * product.weight
+                )
+        for package in self:
+            weight = package.package_type_id.base_weight or 0.0
+            if picking_id:
+                res[package] = weight + package_weights[package.id]
+            else:
+                for quant in package.quant_ids:
+                    weight += quant.quantity * quant.product_id.weight
+                res[package] = weight
+        return res

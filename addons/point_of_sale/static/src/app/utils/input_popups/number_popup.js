@@ -15,21 +15,24 @@ export class NumberPopup extends Component {
         feedback: { type: Function, optional: true },
         formatDisplayedValue: { type: Function, optional: true },
         placeholder: { type: String, optional: true },
-        defaultPayload: { type: [String, { value: null }], optional: true },
+        isValid: { type: Function, optional: true },
         getPayload: Function,
         close: Function,
     };
     static defaultProps = {
         title: _t("Confirm?"),
         startingValue: "",
+        isValid: () => true,
         formatDisplayedValue: (x) => x,
         feedback: () => false,
-        defaultPayload: "0",
     };
 
     setup() {
         this.numberBuffer = useService("number_buffer");
-        this.numberBuffer.use();
+        this.numberBuffer.use({
+            triggerAtEnter: () => this.confirm(),
+            triggerAtEscape: () => this.cancel(),
+        });
         this.state = useState({
             buffer: this.props.startingValue,
         });
@@ -38,7 +41,7 @@ export class NumberPopup extends Component {
         });
     }
     confirm() {
-        this.props.getPayload(this.state.buffer || this.props.defaultPayload);
+        this.props.getPayload(this.state.buffer);
         this.props.close();
     }
 }

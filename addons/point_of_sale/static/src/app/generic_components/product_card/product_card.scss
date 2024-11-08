@@ -7,6 +7,12 @@
     object-fit: contain;
 }
 
+.pos-receipt {
+    .product-name {
+        -webkit-line-clamp: unset;
+    }
+}
+
 .product-name {
 
     box-sizing: border-box;

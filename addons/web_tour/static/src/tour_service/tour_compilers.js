@@ -162,7 +162,7 @@ function getAnchorEl(el, consumeEvent) {
         // jQuery-ui draggable triggers 'drag' events on the .ui-draggable element,
         // but the tip is attached to the .ui-draggable-handle element which may
         // be one of its children (or the element itself)
-        return el.closest(".ui-draggable, .o_draggable");
+        return el.closest(".ui-draggable, .o_draggable, .o_we_draggable");
     }
 
     if (consumeEvent === "input" && !["textarea", "input"].includes(el.tagName.toLowerCase())) {
@@ -526,8 +526,12 @@ export function compileStepManual(stepIndex, step, options) {
 
                     if (subAction.altAnchor) {
                         let altAnchorEl = hoot.queryAll(subAction.altAnchor).at(0);
-                        altAnchorEl = getAnchorEl(altAnchorEl, subAction.event);
-                        consumeEvents.push(...getConsumeEventType(altAnchorEl, subAction.event));
+                        if (altAnchorEl && canContinue(altAnchorEl, step)) {
+                            altAnchorEl = getAnchorEl(altAnchorEl, subAction.event);
+                            consumeEvents.push(
+                                ...getConsumeEventType(altAnchorEl, subAction.event)
+                            );
+                        }
                     }
 
                     const updatePointer = () => {
@@ -601,7 +605,7 @@ export function compileStepAuto(stepIndex, step, options) {
     return [
         {
             action: () => {
-                setupEventActions(document.createElement("div"));
+                setupEventActions(document.body);
                 step.state = step.state || {};
                 if (step.break && debugMode !== false) {
                     // eslint-disable-next-line no-debugger
@@ -642,7 +646,7 @@ export function compileStepAuto(stepIndex, step, options) {
                 browser.clearTimeout(tourTimeout);
                 tourState.set(tour.name, "currentIndex", stepIndex + 1);
 
-                if (showPointerDuration > 0) {
+                if (showPointerDuration > 0 && stepEl !== true) {
                     // Useful in watch mode.
                     pointer.pointTo(stepEl, step);
                     await new Promise((r) => browser.setTimeout(r, showPointerDuration));

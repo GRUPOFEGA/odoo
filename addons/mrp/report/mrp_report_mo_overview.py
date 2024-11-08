@@ -510,6 +510,7 @@ class ReportMoOverview(models.AbstractModel):
     def _get_replenishment_lines(self, production, move_raw, replenish_data, level, current_index):
         product = move_raw.product_id
         quantity = move_raw.product_uom_qty if move_raw.state != 'done' else move_raw.quantity
+        reserved_quantity = self._get_reserved_qty(move_raw, production.warehouse_id, replenish_data)
         currency = (production.company_id or self.env.company).currency_id
         forecast = replenish_data['products'][product.id].get('forecast', [])
         current_lines = filter(lambda line: line.get('document_in', False) and line.get('document_out', False)
@@ -517,7 +518,7 @@ class ReportMoOverview(models.AbstractModel):
         total_ordered = 0
         replenishments = []
         for count, forecast_line in enumerate(current_lines):
-            if float_compare(total_ordered, quantity, precision_rounding=move_raw.product_uom.rounding) == 0:
+            if float_compare(total_ordered, quantity - reserved_quantity, precision_rounding=move_raw.product_uom.rounding) >= 0:
                 # If a same product is used twice in the same MO, don't duplicate the replenishment lines
                 break
             doc_in = self.env[forecast_line['document_in']['_name']].browse(forecast_line['document_in']['id'])
@@ -543,6 +544,7 @@ class ReportMoOverview(models.AbstractModel):
                 'currency_id': currency.id,
                 'currency': currency,
             }
+            forecast_line['already_used'] = True
             if doc_in._name == 'mrp.production':
                 replenishment['components'] = self._get_components_data(doc_in, replenish_data, level + 2, replenishment_index)
                 replenishment['operations'] = self._get_operations_data(doc_in, level + 2, replenishment_index)
@@ -558,7 +560,6 @@ class ReportMoOverview(models.AbstractModel):
             replenishment['summary']['mo_cost_decorator'] = self._get_comparison_decorator(replenishment['summary']['real_cost'], replenishment['summary']['mo_cost'], replenishment['summary']['currency'].rounding)
             replenishment['summary']['formatted_state'] = self._format_state(doc_in, replenishment['components']) if doc_in._name == 'mrp.production' else self._format_state(doc_in)
             replenishments.append(replenishment)
-            forecast_line['already_used'] = True
             total_ordered += replenishment['summary']['quantity']
 
         # Add "In transit" line if necessary
@@ -567,7 +568,6 @@ class ReportMoOverview(models.AbstractModel):
             total_ordered += in_transit_line['summary']['quantity']
             replenishments.append(in_transit_line)
 
-        reserved_quantity = self._get_reserved_qty(move_raw, production.warehouse_id, replenish_data)
         # Avoid creating a "to_order" line to compensate for missing stock (i.e. negative free_qty).
         free_qty = max(0, product.uom_id._compute_quantity(product.free_qty, move_raw.product_uom))
         missing_quantity = quantity - (reserved_quantity + free_qty + total_ordered)
@@ -768,7 +768,7 @@ class ReportMoOverview(models.AbstractModel):
                     line['quantity'] -= used_quantity
 
                     move_out_qty -= used_quantity
-                    if float_compare(move_out_qty, 0, line['move_out'].product_uom.rounding) <= 0:
+                    if float_compare(move_out_qty, 0, precision_rounding=line['move_out'].product_uom.rounding) <= 0:
                         break
         return new_lines + forecast_lines
 

@@ -82,13 +82,21 @@ export class PartnerList extends Component {
             : partners
                   .slice(0, 1000)
                   .toSorted((a, b) =>
-                      this.props.partner?.id === a.id ? -1 : a.name.localeCompare(b.name)
+                      this.props.partner?.id === a.id
+                          ? -1
+                          : (a.name || "").localeCompare(b.name || "")
                   );
 
         return availablePartners;
     }
     get isBalanceDisplayed() {
         return false;
+    }
+    async editPartner(p) {
+        const partner = await this.pos.editPartner(p);
+        if (partner) {
+            this.clickPartner(partner);
+        }
     }
     clickPartner(partner) {
         this.props.getPayload(partner);
@@ -112,7 +120,13 @@ export class PartnerList extends Component {
         let domain = [];
         const limit = 30;
         if (this.state.query) {
-            const search_fields = ["name", "parent_name", "phone_mobile_search", "email"];
+            const search_fields = [
+                "name",
+                "parent_name",
+                "phone_mobile_search",
+                "email",
+                "barcode",
+            ];
             domain = [
                 ...Array(search_fields.length - 1).fill("|"),
                 ...search_fields.map((field) => [field, "ilike", this.state.query + "%"]),

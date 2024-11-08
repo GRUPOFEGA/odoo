@@ -281,12 +281,16 @@ export class ListRenderer extends Component {
         return Object.values(list.fields)
             .filter(
                 (field) =>
+                    list.activeFields[field.name] &&
                     field.relatedPropertyField &&
-                    field.relatedPropertyField.fieldName === column.name
+                    field.relatedPropertyField.name === column.name &&
+                    field.type !== "separator"
             )
             .map((propertyField) => {
+                const activeField = list.activeFields[propertyField.name];
                 return {
                     ...getPropertyFieldInfo(propertyField),
+                    relatedPropertyField: activeField.relatedPropertyField,
                     id: `${column.id}_${propertyField.name}`,
                     column_invisible: combineModifiers(
                         propertyField.column_invisible,
@@ -558,6 +562,11 @@ export class ListRenderer extends Component {
                 continue;
             }
             const { attrs, widget } = column;
+            const func =
+                (attrs.sum && "sum") ||
+                (attrs.avg && "avg") ||
+                (attrs.max && "max") ||
+                (attrs.min && "min");
             let currencyId;
             if (type === "monetary" || widget === "monetary") {
                 const currencyField =
@@ -572,7 +581,7 @@ export class ListRenderer extends Component {
                     continue;
                 }
                 currencyId = values[0][currencyField] && values[0][currencyField][0];
-                if (currencyId) {
+                if (currencyId && func) {
                     const sameCurrency = values.every(
                         (value) => currencyId === value[currencyField][0]
                     );
@@ -585,11 +594,6 @@ export class ListRenderer extends Component {
                     }
                 }
             }
-            const func =
-                (attrs.sum && "sum") ||
-                (attrs.avg && "avg") ||
-                (attrs.max && "max") ||
-                (attrs.min && "min");
             if (func) {
                 let aggregateValue = 0;
                 if (func === "max") {
@@ -1023,7 +1027,7 @@ export class ListRenderer extends Component {
         }
     }
 
-    async onDeleteRecord(record) {
+    async onDeleteRecord(record, ev) {
         this.keepColumnWidths = true;
         const editedRecord = this.props.list.editedRecord;
         if (editedRecord && editedRecord !== record) {
@@ -1033,6 +1037,14 @@ export class ListRenderer extends Component {
             }
         }
         if (this.activeActions.onDelete) {
+            if (ev) {
+                const element = ev.target.closest(".o_list_record_remove");
+                if (element.dataset.clicked) {
+                    return;
+                }
+                element.dataset.clicked = true;
+            }
+
             this.activeActions.onDelete(record);
         }
     }
@@ -1348,7 +1360,7 @@ export class ListRenderer extends Component {
             case "tab": {
                 const index = list.records.indexOf(record);
                 const lastIndex = topReCreate ? 0 : list.records.length - 1;
-                if (index === lastIndex) {
+                if (index === lastIndex || index === list.records.length - 1) {
                     if (this.displayRowCreates) {
                         if (record.isNew && !record.dirty) {
                             list.leaveEditMode();

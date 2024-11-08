@@ -12,7 +12,9 @@ import { getNextTabableElement } from "@web/core/utils/ui";
 import { animationFrame } from "@odoo/hoot-mock";
 
 class Partner extends models.Model {
-    foo = fields.Char({ string: "Foo", default: "My little Foo Value", trim: true });
+    foo = fields.Char({ default: "My little Foo Value", trim: true });
+    name = fields.Char();
+
     _records = [{ foo: "yop" }, { foo: "blip" }];
 }
 
@@ -59,7 +61,7 @@ test("PhoneField in form view on normal screens (edit)", async () => {
     expect(".o_field_phone a").toHaveAttribute("href", "tel:yop");
 
     // change value in edit mode
-    click(`input[type="tel"]`);
+    await click(`input[type="tel"]`);
     edit("new");
     await animationFrame();
     // save
@@ -85,8 +87,9 @@ test("PhoneField in editable list view on normal screens", async () => {
     expect(cell.parentElement).toHaveClass("o_selected_row");
     expect(`tbody td:not(.o_list_record_selector) input`).toHaveValue("yop");
 
-    click(`tbody td:not(.o_list_record_selector) input`);
+    await click(`tbody td:not(.o_list_record_selector) input`);
     edit("new");
+    await animationFrame();
     click(".o_control_panel_main_buttons .o_list_button_save");
     await animationFrame();
 
@@ -96,7 +99,6 @@ test("PhoneField in editable list view on normal screens", async () => {
 });
 
 test("use TAB to navigate to a PhoneField", async () => {
-    Partner._fields.display_name = fields.Char();
     await mountView({
         type: "form",
         resModel: "partner",
@@ -104,21 +106,21 @@ test("use TAB to navigate to a PhoneField", async () => {
             <form>
                 <sheet>
                     <group>
-                        <field name="display_name"/>
+                        <field name="name"/>
                         <field name="foo" widget="phone"/>
                     </group>
                 </sheet>
             </form>`,
     });
 
-    pointerDown(".o_field_widget[name=display_name] input");
+    await pointerDown(".o_field_widget[name=name] input");
 
-    expect(".o_field_widget[name=display_name] input").toBeFocused();
+    expect(".o_field_widget[name=name] input").toBeFocused();
     expect(queryOne`[name="foo"] input:only`).toBe(getNextTabableElement());
 });
 
 test("phone field with placeholder", async () => {
-    Partner._fields.foo = fields.Char({ string: "Foo", default: false, trim: true });
+    Partner._fields.foo.default = false;
     await mountView({
         type: "form",
         resModel: "partner",
@@ -135,7 +137,7 @@ test("phone field with placeholder", async () => {
 });
 
 test("unset and readonly PhoneField", async () => {
-    Partner._fields.foo = fields.Char({ string: "Foo", default: false, trim: true });
+    Partner._fields.foo.default = false;
     await mountView({
         type: "form",
         resModel: "partner",

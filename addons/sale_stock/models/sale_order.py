@@ -31,12 +31,13 @@ class SaleOrder(models.Model):
     delivery_count = fields.Integer(string='Delivery Orders', compute='_compute_picking_ids')
     delivery_status = fields.Selection([
         ('pending', 'Not Delivered'),
+        ('started', 'Started'),
         ('partial', 'Partially Delivered'),
         ('full', 'Fully Delivered'),
     ], string='Delivery Status', compute='_compute_delivery_status', store=True,
-       help="Red: Late\n\
-            Orange: To process today\n\
-            Green: On time")
+       help="Blue: Not Delivered/Started\n\
+            Orange: Partially Delivered\n\
+            Green: Fully Delivered")
     procurement_group_id = fields.Many2one('procurement.group', 'Procurement Group', copy=False)
     effective_date = fields.Datetime("Effective Date", compute='_compute_effective_date', store=True, help="Completion date of the first delivery order.")
     expected_date = fields.Datetime( help="Delivery date you can promise to the customer, computed from the minimum lead time of "
@@ -80,8 +81,11 @@ class SaleOrder(models.Model):
                 order.delivery_status = False
             elif all(p.state in ['done', 'cancel'] for p in order.picking_ids):
                 order.delivery_status = 'full'
-            elif any(p.state == 'done' for p in order.picking_ids):
+            elif any(p.state == 'done' for p in order.picking_ids) and any(
+                    l.qty_delivered for l in order.order_line):
                 order.delivery_status = 'partial'
+            elif any(p.state == 'done' for p in order.picking_ids):
+                order.delivery_status = 'started'
             else:
                 order.delivery_status = 'pending'
 
@@ -99,7 +103,10 @@ class SaleOrder(models.Model):
             for order in self:
                 pre_order_line_qty = {order_line: order_line.product_uom_qty for order_line in order.mapped('order_line') if not order_line.is_expense}
 
-        if values.get('partner_shipping_id'):
+        if values.get('partner_shipping_id') and self._context.get('update_delivery_shipping_partner'):
+            for order in self:
+                order.picking_ids.partner_id = values.get('partner_shipping_id')
+        elif values.get('partner_shipping_id'):
             new_partner = self.env['res.partner'].browse(values.get('partner_shipping_id'))
             for record in self:
                 picking = record.mapped('picking_ids').filtered(lambda x: x.state not in ('done', 'cancel'))

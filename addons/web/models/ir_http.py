@@ -40,6 +40,12 @@ class Http(models.AbstractModel):
         return any(bot in user_agent for bot in cls.bots)
 
     @classmethod
+    def _sanitize_cookies(cls, cookies):
+        super()._sanitize_cookies(cookies)
+        if cids := cookies.get('cids'):
+            cookies['cids'] = '-'.join(cids.split(','))
+
+    @classmethod
     def _handle_debug(cls):
         debug = request.httprequest.args.get('debug')
         if debug is not None:
@@ -91,6 +97,7 @@ class Http(models.AbstractModel):
             "uid": session_uid,
             "is_system": user._is_system() if session_uid else False,
             "is_admin": user._is_admin() if session_uid else False,
+            "is_public": user._is_public(),
             "is_internal_user": is_internal_user,
             "user_context": user_context,
             "db": self.env.cr.dbname,
@@ -129,7 +136,7 @@ class Http(models.AbstractModel):
             # but is still included in some other calls (e.g. '/web/session/authenticate')
             # to avoid access errors and unnecessary information, it is only included for users
             # with access to the backend ('internal'-type users)
-            menus = self.env['ir.ui.menu'].load_menus(request.session.debug)
+            menus = self.env['ir.ui.menu'].with_context(lang=request.session.context['lang']).load_menus(request.session.debug)
             ordered_menus = {str(k): v for k, v in menus.items()}
             menu_json_utf8 = json.dumps(ordered_menus, default=ustr, sort_keys=True).encode()
             session_info['cache_hashes'].update({
@@ -173,8 +180,10 @@ class Http(models.AbstractModel):
         session_info = {
             'is_admin': user._is_admin() if session_uid else False,
             'is_system': user._is_system() if session_uid else False,
+            'is_public': user._is_public(),
             'is_website_user': user._is_public() if session_uid else False,
             'user_id': user.id if session_uid else False,
+            'uid': user.id if session_uid else False,
             'is_frontend': True,
             'profile_session': request.session.profile_session,
             'profile_collectors': request.session.profile_collectors,

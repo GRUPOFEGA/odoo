@@ -34,7 +34,7 @@ class Project(models.Model):
         count_fields = {fname for fname in self._fields if 'count' in fname}
         if count_field not in count_fields:
             raise ValueError(f"Parameter 'count_field' can only be one of {count_fields}, got {count_field} instead.")
-        domain = [('project_id', 'in', self.ids)]
+        domain = [('project_id', 'in', self.ids), ('display_in_project', '=', True)]
         if additional_domain:
             domain = AND([domain, additional_domain])
         tasks_count_by_project = dict(self.env['project.task'].with_context(
@@ -642,6 +642,19 @@ class Project(models.Model):
                 res -= waiting_subtype
         return res
 
+    def _notify_get_recipients_groups(self, message, model_description, msg_vals=None):
+        """ Give access to the portal user/customer if the project visibility is portal. """
+        groups = super()._notify_get_recipients_groups(message, model_description, msg_vals=msg_vals)
+        if not self:
+            return groups
+
+        self.ensure_one()
+        portal_privacy = self.privacy_visibility == 'portal'
+        for group_name, _group_method, group_data in groups:
+            if group_name in ['portal', 'portal_customer'] and not portal_privacy:
+                group_data['has_button_access'] = False
+        return groups
+
     # ---------------------------------------------------
     #  Actions
     # ---------------------------------------------------
@@ -695,7 +708,7 @@ class Project(models.Model):
         favorite_projects.write({'favorite_user_ids': [(3, self.env.uid)]})
 
     def action_view_tasks(self):
-        action = self.env['ir.actions.act_window'].with_context({'active_id': self.id})._for_xml_id('project.act_project_project_2_project_task_all')
+        action = self.env['ir.actions.act_window'].with_context(active_id=self.id)._for_xml_id('project.act_project_project_2_project_task_all')
         action['display_name'] = self.name
         context = action['context'].replace('active_id', str(self.id))
         context = ast.literal_eval(context)
@@ -712,7 +725,7 @@ class Project(models.Model):
         action['display_name'] = _("%(name)s's Rating", name=self.name)
         action_context = ast.literal_eval(action['context']) if action['context'] else {}
         action_context.update(self._context)
-        action_context['search_default_filter_write_date'] = 'custom_create_date_last_30_days'
+        action_context['search_default_filter_write_date'] = 'custom_write_date_last_30_days'
         action_context.pop('group_by', None)
         action['domain'] = [('consumed', '=', True), ('parent_res_model', '=', 'project.project'), ('parent_res_id', '=', self.id)]
         if self.rating_count == 1:
@@ -906,7 +919,7 @@ class Project(models.Model):
 
     @api.model
     def _get_values_analytic_account_batch(self, project_vals):
-        project_plan_id = int(self.env['ir.config_parameter'].sudo().get_param('analytic.project_plan'))
+        project_plan_id = int(self.env['ir.config_parameter'].sudo().get_param('analytic.analytic_plan_projects'))
 
         if not project_plan_id:
             project_plan, _other_plans = self.env['account.analytic.plan']._get_all_plans()

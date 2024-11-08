@@ -80,7 +80,7 @@ class SaleOrderLine(models.Model):
             move.id
             for line in self
             if line.state == 'sale'
-            for move in line.move_ids
+            for move in line.move_ids | self.env['stock.move'].browse(line.move_ids._rollup_move_origs())
             if move.product_id == line.product_id
         }
         all_moves = self.env['stock.move'].browse(all_move_ids)
@@ -90,7 +90,9 @@ class SaleOrderLine(models.Model):
         for line in self.filtered(lambda l: l.state == 'sale'):
             if not line.display_qty_widget:
                 continue
-            moves = line.move_ids.filtered(lambda m: m.product_id == line.product_id)
+            moves = line.move_ids | self.env['stock.move'].browse(line.move_ids._rollup_move_origs())
+            moves = moves.filtered(
+                lambda m: m.product_id == line.product_id and m.state not in ('cancel', 'done'))
             line.forecast_expected_date = max(
                 (
                     forecast_expected_date_per_move[move.id]
@@ -265,13 +267,18 @@ class SaleOrderLine(models.Model):
             'route_ids': self.route_id,
             'warehouse_id': self.warehouse_id,
             'partner_id': self.order_id.partner_shipping_id.id,
-            'location_final_id': self.order_id.partner_shipping_id.property_stock_customer,
+            'location_final_id': self._get_location_final(),
             'product_description_variants': self.with_context(lang=self.order_id.partner_id.lang)._get_sale_order_line_multiline_description_variants(),
             'company_id': self.order_id.company_id,
             'product_packaging_id': self.product_packaging_id,
             'sequence': self.sequence,
         })
         return values
+
+    def _get_location_final(self):
+        # Can be overriden for inter-company transactions.
+        self.ensure_one()
+        return self.order_id.partner_shipping_id.property_stock_customer
 
     def _get_qty_procurement(self, previous_product_uom_qty=False):
         self.ensure_one()
@@ -291,8 +298,8 @@ class SaleOrderLine(models.Model):
                            If False, consider the moves that were created through the initial rule of the delivery route,
                            to support the new push mechanism.
         """
-        outgoing_moves = self.env['stock.move']
-        incoming_moves = self.env['stock.move']
+        outgoing_moves_ids = set()
+        incoming_moves_ids = set()
 
         moves = self.move_ids.filtered(lambda r: r.state != 'cancel' and not r.scrapped and self.product_id == r.product_id)
         if moves and not strict:
@@ -308,14 +315,14 @@ class SaleOrderLine(models.Model):
             moves = moves.filtered(lambda r: fields.Date.context_today(r, r.date) <= self._context['accrual_entry_date'])
 
         for move in moves:
-            if (strict and move.location_dest_id.usage == "customer") or \
-               (not strict and move.rule_id.id in triggering_rule_ids and move.location_final_id.usage == "customer"):
+            if (strict and move.location_dest_id._is_outgoing()) or \
+               (not strict and move.rule_id.id in triggering_rule_ids and (move.location_final_id or move.location_dest_id)._is_outgoing()):
                 if not move.origin_returned_move_id or (move.origin_returned_move_id and move.to_refund):
-                    outgoing_moves |= move
-            elif move.location_id.usage == "customer" and move.to_refund:
-                incoming_moves |= move
+                    outgoing_moves_ids.add(move.id)
+            elif move.location_id._is_outgoing() and move.to_refund:
+                incoming_moves_ids.add(move.id)
 
-        return outgoing_moves, incoming_moves
+        return self.env['stock.move'].browse(outgoing_moves_ids), self.env['stock.move'].browse(incoming_moves_ids)
 
     def _get_procurement_group(self):
         return self.order_id.procurement_group_id
@@ -331,7 +338,7 @@ class SaleOrderLine(models.Model):
     def _create_procurements(self, product_qty, procurement_uom, origin, values):
         self.ensure_one()
         return [self.env['procurement.group'].Procurement(
-            self.product_id, product_qty, procurement_uom, self.order_id.partner_shipping_id.property_stock_customer,
+            self.product_id, product_qty, procurement_uom, self._get_location_final(),
             self.product_id.display_name, origin, self.order_id.company_id, values)]
 
     def _action_launch_stock_rule(self, previous_product_uom_qty=False):

@@ -17,7 +17,7 @@ class PosConfig(models.Model):
         return self.env["res.lang"].get_installed()
 
     def _self_order_default_user(self):
-        users = self.env["res.users"].search(['|', ('company_id', '=', self.env.company.id), ('company_id', '=', False)])
+        users = self.env["res.users"].search(['|', ('company_ids', 'in', self.env.company.id), ('company_id', '=', False)])
         for user in users:
             if user.sudo().has_group("point_of_sale.group_pos_manager"):
                 return user
@@ -152,10 +152,11 @@ class PosConfig(models.Model):
     def _check_default_user(self):
         for record in self:
             if (
-                record.self_ordering_mode == 'mobile'
-                and record.self_ordering_default_user_id
+                record.self_ordering_mode != 'nothing' and (
+                not record.self_ordering_default_user_id or (
+                record.self_ordering_default_user_id
                 and not record.self_ordering_default_user_id.sudo().has_group("point_of_sale.group_pos_user")
-                and not record.self_ordering_default_user_id.sudo().has_group("point_of_sale.group_pos_manager")
+                and not record.self_ordering_default_user_id.sudo().has_group("point_of_sale.group_pos_manager")))
             ):
                 raise UserError(_("The Self-Order default user must be a POS user"))
 
@@ -241,7 +242,7 @@ class PosConfig(models.Model):
         return ['pos.session', 'pos.order', 'pos.order.line', 'pos.payment', 'pos.payment.method', 'res.currency', 'pos.category', 'product.product', 'pos.combo', 'pos.combo.line',
             'res.company', 'account.tax', 'pos.printer', 'res.country', 'product.pricelist', 'product.pricelist.item', 'account.fiscal.position', 'account.fiscal.position.tax',
             'res.lang', 'product.attribute', 'product.attribute.custom.value', 'product.template.attribute.line', 'product.template.attribute.value',
-            'decimal.precision', 'uom.uom', 'pos.printer', 'pos_self_order.custom_link', 'restaurant.floor', 'restaurant.table']
+            'decimal.precision', 'uom.uom', 'pos.printer', 'pos_self_order.custom_link', 'restaurant.floor', 'restaurant.table', 'account.cash.rounding']
 
     def load_self_data(self):
         # Init our first record, in case of self_order is pos_config
@@ -253,6 +254,7 @@ class PosConfig(models.Model):
             }
         }
         response['pos.config']['data'][0]['_self_ordering_image_home_ids'] = self._get_self_ordering_attachment(self.self_ordering_image_home_ids)
+        response['pos.config']['data'][0]['_pos_special_products_ids'] = self._get_special_products().ids
         self.env['pos.session']._load_pos_data_relations('pos.config', response)
 
         # Classic data loading
@@ -313,6 +315,7 @@ class PosConfig(models.Model):
         self.ensure_one()
 
         if not self.current_session_id:
+            self._check_before_creating_new_session()
             self.env['pos.session'].create({'user_id': self.env.uid, 'config_id': self.id})
             self._notify('STATUS', {'status': 'open'})
 

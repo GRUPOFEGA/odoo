@@ -20,7 +20,6 @@ import {
 } from "@mail/../tests/mail_test_helpers";
 
 import { describe, expect, test } from "@odoo/hoot";
-import { queryFirst } from "@odoo/hoot-dom";
 import { Deferred, mockDate, tick } from "@odoo/hoot-mock";
 import { Command, makeKwArgs, onRpc, serverState, withUser } from "@web/../tests/web_test_helpers";
 
@@ -143,9 +142,7 @@ test("auto-scroll to last read message on thread load", async () => {
     await start();
     await openDiscuss(channelId);
     await contains(".o-mail-Thread-newMessage ~ .o-mail-Message", { text: "message 100" });
-    const thread = document.querySelector(".o-mail-Thread");
-    const message = queryFirst(".o-mail-Message:contains(message 100)");
-    expect(isInViewportOf(thread, message)).toBe(true);
+    await isInViewportOf(".o-mail-Message:contains(message 100)", ".o-mail-Thread");
 });
 
 test("display day separator before first message of the day", async () => {
@@ -336,7 +333,7 @@ test("mark channel as fetched when a new message is loaded", async () => {
     );
     await contains(".o-mail-Message");
     await assertSteps(["rpc:channel_fetch"]);
-    await contains(".o-mail-Thread-newMessage hr + span", { text: "New messages" });
+    await contains(".o-mail-Thread-newMessage hr + span", { text: "New" });
     await focus(".o-mail-Composer-input");
     await assertSteps(["rpc:mark_as_read"]);
 });
@@ -719,7 +716,7 @@ test("first unseen message should be directly preceded by the new message separa
         })
     );
     await contains(".o-mail-Message", { count: 3 });
-    await contains(".o-mail-Thread-newMessage hr + span", { text: "New messages" });
+    await contains(".o-mail-Thread-newMessage hr + span", { text: "New" });
     await contains(".o-mail-Message[aria-label='Note'] + .o-mail-Thread-newMessage");
 });
 

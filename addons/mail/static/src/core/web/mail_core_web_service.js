@@ -38,9 +38,10 @@ export class MailCoreWeb {
                 inbox.counter++;
             }
             inbox.messages.add(message);
-            if (notifId > message.thread.message_needaction_counter_bus_id) {
+            if (message.thread && notifId > message.thread.message_needaction_counter_bus_id) {
                 message.thread.message_needaction_counter++;
             }
+            this.store.env.services["mail.out_of_focus"].notify(message);
         });
         this.busService.subscribe("mail.message/mark_as_read", (payload, { id: notifId }) => {
             const { message_ids: messageIds, needaction_inbox_counter } = payload;

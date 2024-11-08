@@ -1113,8 +1113,15 @@ class MailThread(models.AbstractModel):
             for ref in mail_header_msgid_re.findall(thread_references)
             if 'reply_to' not in ref
         ]
+
+        # avoid creating a gigantic query by limiting the number of references taken into account.
+        # newer msg_ids are *appended* to References as per RFC5322 §3.6.4, so we should generally
+        # find a match just with the last entry (equal to `In-Reply-To`). 32 refs seems large enough,
+        # we've seen performance degrade with 100+ refs.
+        msg_references = msg_references[-32:]
+
         replying_to_msg = self.env['mail.message'].sudo().search(
-            [('message_id', 'in', msg_references)], limit=1, order='id desc, message_id'
+            [('message_id', 'in', msg_references)], limit=1, order='id desc'
         ) if msg_references else self.env['mail.message']
         is_a_reply, reply_model, reply_thread_id = bool(replying_to_msg), replying_to_msg.model, replying_to_msg.res_id
 
@@ -1543,8 +1550,8 @@ class MailThread(models.AbstractModel):
                     continue  # skip container
 
                 filename = part.get_filename()  # I may not properly handle all charsets
-                if part.get_content_type() == 'text/xml' and not part.get_param('charset'):
-                    # for text/xml with omitted charset, the charset is assumed to be ASCII by the `email` module
+                if part.get_content_type().startswith('text/') and not part.get_param('charset'):
+                    # for text/* with omitted charset, the charset is assumed to be ASCII by the `email` module
                     # although the payload might be in UTF8
                     part.set_charset('utf-8')
                 encoding = part.get_content_charset()  # None if attachment
@@ -2353,11 +2360,11 @@ class MailThread(models.AbstractModel):
                 attachement_values_list.append(attachement_values)
 
                 # keep cid, name list and token synced with attachement_values_list length to match ids latter
-                attachement_extra_list.append((cid, name, token))
+                attachement_extra_list.append((cid, name, token, info))
 
-            new_attachments = self.env['ir.attachment'].sudo().create(attachement_values_list)
+            new_attachments = self._create_attachments_for_post(attachement_values_list, attachement_extra_list)
             attach_cid_mapping, attach_name_mapping = {}, {}
-            for attachment, (cid, name, token) in zip(new_attachments, attachement_extra_list):
+            for attachment, (cid, name, token, _info) in zip(new_attachments, attachement_extra_list):
                 if cid:
                     attach_cid_mapping[cid] = (attachment.id, token)
                 if name:
@@ -2383,6 +2390,12 @@ class MailThread(models.AbstractModel):
                     return_values['body'] = Markup(lxml.html.tostring(root, pretty_print=False, encoding='unicode'))
         return_values['attachment_ids'] = m2m_attachment_ids
         return return_values
+
+    def _create_attachments_for_post(self, values_list, extra_list):
+        """ Ease tweaking attachment creation when processing them in posting
+        process. Mainly meant for stable version, to be cleaned when reaching
+        master. """
+        return self.env['ir.attachment'].sudo().create(values_list)
 
     def _process_attachments_for_template_post(self, mail_template):
         """ Model specific management of attachments used with template attachments
@@ -3162,7 +3175,9 @@ class MailThread(models.AbstractModel):
           skip message usage and spare some queries;
         """
         bus_notifications = []
-        inbox_pids_uids = [(r["id"], r["uid"]) for r in recipients_data if r["notif"] == "inbox"]
+        inbox_pids_uids = sorted(
+            [(r["id"], r["uid"]) for r in recipients_data if r["notif"] == "inbox"]
+        )
         if inbox_pids_uids:
             notif_create_values = [
                 {
@@ -3191,7 +3206,7 @@ class MailThread(models.AbstractModel):
                         user.partner_id,
                         "mail.message/inbox",
                         Store(
-                            message.with_user(user),
+                            message.with_user(user).with_context(allowed_company_ids=None),
                             msg_vals=msg_vals,
                             for_current_user=True,
                             add_followers=True,
@@ -3263,8 +3278,10 @@ class MailThread(models.AbstractModel):
         emails = self.env['mail.mail'].sudo()
 
         # loop on groups (customer, portal, user,  ... + model specific like group_sale_salesman)
+        gen_batch_size = int(
+            self.env['ir.config_parameter'].sudo().get_param('mail.batch_size')
+        ) or 50  # be sure to not have 0, as otherwise no iteration is done
         notif_create_values = []
-        recipients_max = 50
         for _lang, render_values, recipients_group in self._notify_get_classified_recipients_iterator(
             message,
             partners_data,
@@ -3284,7 +3301,7 @@ class MailThread(models.AbstractModel):
             recipients_ids = recipients_group.pop('recipients')
 
             # create email
-            for recipients_ids_chunk in split_every(recipients_max, recipients_ids):
+            for recipients_ids_chunk in split_every(gen_batch_size, recipients_ids):
                 mail_values = self._notify_by_email_get_final_mail_values(
                     recipients_ids_chunk,
                     base_mail_values,
@@ -3326,8 +3343,10 @@ class MailThread(models.AbstractModel):
         #      to prevent sending email during a simple update of the database
         #      using the command-line.
         test_mode = getattr(threading.current_thread(), 'testing', False)
-        force_send = self.env.context.get('mail_notify_force_send', force_send)
-        if force_send and len(emails) < recipients_max and (not self.pool._init or test_mode):
+        if force_send := self.env.context.get('mail_notify_force_send', force_send):
+            force_send_limit = int(self.env['ir.config_parameter'].sudo().get_param('mail.mail.force.send.limit', 100))
+            force_send = len(emails) < force_send_limit
+        if force_send and (not self.pool._init or test_mode):
             # unless asked specifically, send emails after the transaction to
             # avoid side effects due to emails being sent while the transaction fails
             if not test_mode and send_after_commit:
@@ -4097,7 +4116,7 @@ class MailThread(models.AbstractModel):
         author_id = [msg_vals.get('author_id')] if 'author_id' in msg_vals else msg_sudo.author_id.ids
         # never send to author and to people outside Odoo (email), except comments
         pids = set()
-        if msg_type == 'comment':
+        if msg_type in {'comment', 'whatsapp_message'}:
             pids = set(notif_pids) - set(author_id)
         elif msg_type in ('notification', 'user_notification', 'email'):
             pids = (set(notif_pids) - set(author_id) - set(no_inbox_pids))
@@ -4523,7 +4542,7 @@ class MailThread(models.AbstractModel):
         attachments = message.attachment_ids.sorted("id")
         broadcast_store = Store(attachments)
         res = {
-            "attachments": {"id": attachment.id for attachment in attachments},
+            "attachments": [{"id": attachment.id} for attachment in attachments],
             "body": message.body,
             "id": message.id,
             "pinned_at": message.pinned_at,
@@ -4545,7 +4564,15 @@ class MailThread(models.AbstractModel):
 
     def _get_mail_thread_data_attachments(self):
         self.ensure_one()
-        return self.env['ir.attachment'].search([('res_id', '=', self.id), ('res_model', '=', self._name)], order='id desc')
+        res = self.env['ir.attachment'].search([('res_id', '=', self.id), ('res_model', '=', self._name)], order='id desc')
+        if 'original_id' in self.env['ir.attachment']._fields:
+            # If the image is SVG: We take the png version if exist otherwise we take the svg
+            # If the image is not SVG: We take the original one if exist otherwise we take it
+            svg_ids = res.filtered(lambda attachment: attachment.mimetype == 'image/svg+xml')
+            non_svg_ids = res - svg_ids
+            original_ids = res.mapped('original_id')
+            res = res.filtered(lambda attachment: (attachment in svg_ids and attachment not in original_ids) or (attachment in non_svg_ids and attachment.original_id not in non_svg_ids))
+        return res
 
     def _thread_to_store(self, store: Store, /, *, request_list):
         res = {'hasWriteAccess': False, 'hasReadAccess': True, "id": self.id, "model": self._name}

@@ -1,4 +1,6 @@
 import { queryOne } from "@odoo/hoot-dom";
+import * as NumberPopup from "@point_of_sale/../tests/tours/utils/number_popup_util";
+import * as Dialog from "@point_of_sale/../tests/tours/utils/dialog_util";
 
 export function table({ name, withClass = "", withoutClass, run = () => {}, numOfSeats }) {
     let trigger = `.floor-map .table${withClass}`;
@@ -7,9 +9,6 @@ export function table({ name, withClass = "", withoutClass, run = () => {}, numO
     }
     if (name) {
         trigger += `:has(.label:contains("${name}"))`;
-    }
-    if (numOfSeats) {
-        trigger += `:has(.table-seats:contains("${numOfSeats}"))`;
     }
     return {
         content: `Check table with attributes: ${JSON.stringify(arguments[0])}`,
@@ -56,6 +55,17 @@ export function clickSaveEditButton() {
         },
     ];
 }
+export function goTo(name) {
+    return [
+        {
+            content: `click on Go To button`,
+            trigger: `.pos-topheader .btn:contains("Go to...")`,
+            run: "click",
+        },
+        ...NumberPopup.enterValue(name),
+        Dialog.confirm(),
+    ];
+}
 export function selectedFloorIs(name) {
     return [
         {
@@ -67,7 +77,7 @@ export function selectedFloorIs(name) {
 export function orderCountSyncedInTableIs(table, count) {
     return [
         {
-            trigger: `.floor-map .table .label:contains("${table}") ~ .order-count:contains("${count}")`,
+            trigger: `.floor-map .table:has(.label:contains("${table}")):has(.order-count:contains("${count}"))`,
         },
     ];
 }

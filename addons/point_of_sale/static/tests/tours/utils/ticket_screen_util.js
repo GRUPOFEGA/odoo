@@ -111,7 +111,7 @@ export function confirmRefund() {
     return [
         ProductScreen.clickReview(),
         {
-            trigger: ".ticket-screen .button.pay-order-button",
+            trigger: ".ticket-screen .btn-primary.pay-order-button",
             run: "click",
         },
     ];
@@ -190,6 +190,15 @@ export function receiptTotalIs(amount) {
     return [
         {
             trigger: `.receipt-screen .pos-receipt-amount:contains("${amount}")`,
+        },
+    ];
+}
+
+export function nthColumnContains(nRow, nCol, string) {
+    return [
+        {
+            trigger: `.ticket-screen .order-row:nth-last-child(${nRow}) > .col:nth-child(${nCol}):contains("${string}")`,
+            run: () => {},
         },
     ];
 }

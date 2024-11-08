@@ -80,7 +80,8 @@ export const FONT_SIZE_CLASSES = ["display-1-fs", "display-2-fs", "display-3-fs"
  */
 export const TEXT_STYLE_CLASSES = ["display-1", "display-2", "display-3", "display-4", "lead", "o_small", "small"];
 
-export const ZERO_WIDTH_CHARS = ['\u200b', '\ufeff'];
+const ZWNBSP_CHAR = '\ufeff';
+export const ZERO_WIDTH_CHARS = ['\u200b', ZWNBSP_CHAR];
 export const ZERO_WIDTH_CHARS_REGEX = new RegExp(`[${ZERO_WIDTH_CHARS.join('')}]`, 'g');
 
 //------------------------------------------------------------------------------
@@ -896,12 +897,7 @@ export function getSelectedNodes(editable) {
  */
 export function getDeepRange(editable, { range, sel, splitText, select, correctTripleClick } = {}) {
     sel = sel || editable.parentElement && editable.ownerDocument.getSelection();
-    if (
-        sel &&
-        sel.isCollapsed &&
-        sel.anchorNode &&
-        (sel.anchorNode.nodeName === "BR" || (sel.anchorNode.nodeType === Node.TEXT_NODE && sel.anchorNode.textContent === ''))
-    ) {
+    if (sel && sel.isCollapsed && sel.anchorNode && sel.anchorNode.nodeName === "BR") {
         setSelection(sel.anchorNode.parentElement, childNodeIndex(sel.anchorNode));
     }
     range = range ? range.cloneRange() : sel && sel.rangeCount && sel.getRangeAt(0).cloneRange();
@@ -955,7 +951,8 @@ export function getDeepRange(editable, { range, sel, splitText, select, correctT
         correctTripleClick &&
         !endOffset &&
         (start !== end || startOffset !== endOffset) &&
-        (!beforeEnd || (beforeEnd.nodeType === Node.TEXT_NODE && !isVisibleTextNode(beforeEnd) && !isZWS(beforeEnd)))
+        (!beforeEnd || (beforeEnd.nodeType === Node.TEXT_NODE && !isVisibleTextNode(beforeEnd) && !isZWS(beforeEnd))) &&
+        !closestElement(endLeaf, 'table')
     ) {
         const previous = previousLeaf(endLeaf, editable, true);
         if (previous && closestElement(previous).isContentEditable) {
@@ -1028,7 +1025,7 @@ export function getDeepestPosition(node, offset) {
     let direction = DIRECTIONS.RIGHT;
     let next = node;
     while (next) {
-        if ((isTangible(next) || isZWS(next)) && (!isBlock(next) || next.isContentEditable)) {
+        if (isTangible(next) || isZWS(next)) {
             // Valid node: update position then try to go deeper.
             if (next !== node) {
                 [node, offset] = [next, direction ? 0 : nodeSize(next)];
@@ -1036,13 +1033,17 @@ export function getDeepestPosition(node, offset) {
             // First switch direction to left if offset is at the end.
             direction = offset < node.childNodes.length;
             next = node.childNodes[direction ? offset : offset - 1];
-        } else if (direction && next.nextSibling) {
+        } else if (
+            direction &&
+            next.nextSibling &&
+            closestBlock(node).contains(next.nextSibling)
+        ) {
             // Invalid node: skip to next sibling (without crossing blocks).
             next = next.nextSibling;
         } else {
             // Invalid node: skip to previous sibling (without crossing blocks).
             direction = DIRECTIONS.LEFT;
-            next = !isBlock(next.previousSibling) && next.previousSibling;
+            next = closestBlock(node).contains(next.previousSibling) && next.previousSibling;
         }
         // Avoid too-deep ranges inside self-closing elements like [BR, 0].
         next = !isSelfClosingElement(next) && next;
@@ -1641,7 +1642,7 @@ export function hasClass(node, props) {
  */
 export function isSelectionFormat(editable, format) {
     const selectedNodes = getTraversedNodes(editable)
-        .filter(n => n.nodeType === Node.TEXT_NODE);
+        .filter((n) => n.nodeType === Node.TEXT_NODE && n.nodeValue.replaceAll(ZWNBSP_CHAR, '').length);
     const isFormatted = formatsSpecs[format].isFormatted;
     return selectedNodes.length && selectedNodes.every(n => isFormatted(n, editable));
 }
@@ -1674,7 +1675,7 @@ export function isUnbreakable(node) {
 
 export function isUnremovable(node) {
     return (
-        (node.nodeType !== Node.ELEMENT_NODE && node.nodeType !== Node.TEXT_NODE) ||
+        (node.nodeType !== Node.COMMENT_NODE && node.nodeType !== Node.ELEMENT_NODE && node.nodeType !== Node.TEXT_NODE) ||
         node.oid === 'root' ||
         (node.nodeType === Node.ELEMENT_NODE &&
             (node.classList.contains('o_editable') || node.getAttribute('t-set') || node.getAttribute('t-call'))) ||
@@ -2045,6 +2046,7 @@ export function commonParentGet(node1, node2, root = undefined) {
 }
 
 export function getListMode(pnode) {
+    if (!["UL", "OL"].includes(pnode.tagName)) return;
     if (pnode.tagName == 'OL') return 'OL';
     return pnode.classList.contains('o_checklist') ? 'CL' : 'UL';
 }
@@ -2068,6 +2070,57 @@ export function insertListAfter(afterNode, mode, content = []) {
         }),
     );
     return list;
+}
+
+export function toggleList(node, mode, offset = 0) {
+    let pnode = node.closest('ul, ol');
+    if (!pnode) return;
+    const listMode = getListMode(pnode) + mode;
+    if (['OLCL', 'ULCL'].includes(listMode)) {
+        pnode.classList.add('o_checklist');
+        for (let li = pnode.firstElementChild; li !== null; li = li.nextElementSibling) {
+            if (li.style.listStyle !== 'none') {
+                li.style.listStyle = null;
+                if (!li.style.all) li.removeAttribute('style');
+            }
+        }
+        pnode = setTagName(pnode, 'UL');
+    } else if (['CLOL', 'CLUL'].includes(listMode)) {
+        toggleClass(pnode, 'o_checklist');
+        pnode = setTagName(pnode, mode);
+    } else if (['OLUL', 'ULOL'].includes(listMode)) {
+        pnode = setTagName(pnode, mode);
+    } else {
+        // toggle => remove list
+        let currNode = node;
+        while (currNode) {
+            currNode = currNode.oShiftTab(offset);
+        }
+        return;
+    }
+    return pnode;
+}
+
+/**
+ * Converts a list element and its nested elements to the specified list mode.
+ *
+ * @param {HTMLUListElement|HTMLOListElement|HTMLLIElement} node - HTML element
+ * representing a list or list item.
+ * @param {string} toMode - Target list mode
+ * @returns {HTMLUListElement|HTMLOListElement|HTMLLIElement} node - Modified
+ * list element after conversion.
+ */
+export function convertList(node, toMode) {
+    if (!["UL", "OL", "LI"].includes(node.nodeName)) return;
+    const listMode = getListMode(node);
+    if (listMode && toMode !== listMode) {
+        node = toggleList(node, toMode);
+    }
+    for (const child of node.childNodes) {
+        convertList(child, toMode);
+    }
+
+    return node;
 }
 
 export function toggleClass(node, className) {
@@ -2436,6 +2489,7 @@ export function setTagName(el, newTagName) {
     }
     const n = document.createElement(newTagName);
     if (el.nodeName !== 'LI') {
+        el.style.removeProperty('list-style');
         const attributes = el.attributes;
         for (const attr of attributes) {
             n.setAttribute(attr.name, attr.value);
@@ -3157,11 +3211,12 @@ export function getRangePosition(el, document, options = {}) {
         offset.left = marginLeft;
     }
 
-    if (options.parentContextRect) {
-        offset.left += options.parentContextRect.left;
-        offset.top += options.parentContextRect.top;
+    if (options.getContextFromParentRect) {
+        const parentContextRect = options.getContextFromParentRect();
+        offset.left += parentContextRect.left;
+        offset.top += parentContextRect.top;
         if (isRtl) {
-            offset.right += options.parentContextRect.left;
+            offset.right += parentContextRect.left;
         }
     }
 
@@ -3194,38 +3249,41 @@ export const isNotEditableNode = node =>
     node.getAttribute('contenteditable') &&
     node.getAttribute('contenteditable').toLowerCase() === 'false';
 
+export const isRoot = node => node.oid === "root";
+
 export const leftLeafFirstPath = createDOMPathGenerator(DIRECTIONS.LEFT);
 export const leftLeafOnlyNotBlockPath = createDOMPathGenerator(DIRECTIONS.LEFT, {
     leafOnly: true,
     stopTraverseFunction: isBlock,
-    stopFunction: isBlock,
+    stopFunction: node => isBlock(node) || isRoot(node),
 });
 export const leftLeafOnlyInScopeNotBlockEditablePath = createDOMPathGenerator(DIRECTIONS.LEFT, {
     leafOnly: true,
     inScope: true,
     stopTraverseFunction: node => isNotEditableNode(node) || isBlock(node),
-    stopFunction: node => isNotEditableNode(node) || isBlock(node),
+    stopFunction: node => isNotEditableNode(node) || isBlock(node) || isRoot(node),
 });
 
 export const rightLeafOnlyNotBlockPath = createDOMPathGenerator(DIRECTIONS.RIGHT, {
     leafOnly: true,
     stopTraverseFunction: isBlock,
-    stopFunction: isBlock,
+    stopFunction: node => isBlock(node) || isRoot(node),
 });
 
 export const rightLeafOnlyPathNotBlockNotEditablePath = createDOMPathGenerator(DIRECTIONS.RIGHT, {
     leafOnly: true,
+    stopFunction: node => isRoot(node),
 });
 export const rightLeafOnlyInScopeNotBlockEditablePath = createDOMPathGenerator(DIRECTIONS.RIGHT, {
     leafOnly: true,
     inScope: true,
     stopTraverseFunction: node => isNotEditableNode(node) || isBlock(node),
-    stopFunction: node => isNotEditableNode(node) || isBlock(node),
+    stopFunction: node => isNotEditableNode(node) || isBlock(node) || isRoot(node),
 });
 export const rightLeafOnlyNotBlockNotEditablePath = createDOMPathGenerator(DIRECTIONS.RIGHT, {
     leafOnly: true,
     stopTraverseFunction: node => isNotEditableNode(node) || isBlock(node),
-    stopFunction: node => isBlock(node) && !isNotEditableNode(node),
+    stopFunction: node => isBlock(node) && !isNotEditableNode(node) || isRoot(node),
 });
 //------------------------------------------------------------------------------
 // Miscelaneous

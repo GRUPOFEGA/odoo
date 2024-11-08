@@ -217,6 +217,7 @@
                                 <kanban color="color">
                                     <field name="color"/>
                                     <field name="type"/>
+                                    <field name="is_company"/>
                                     <templates>
                                         <t t-name="kanban-card" class="flex-row">
                                             <aside class="o_kanban_aside_full">
@@ -303,6 +304,7 @@
                                     <field name="company_registry" invisible="parent_id"/>
                                     <field name="ref" string="Reference"/>
                                     <field name="company_id" groups="base.group_multi_company" options="{'no_create': True}" readonly="parent_id" force_save="1"/>
+                                    <field name="company_id" invisible="1"/> <!-- need to be able to to compute based on the company even without multi company groups -->
                                     <field name="industry_id" invisible="not is_company" options="{'no_create': True}"/>
                                 </group>
                             </group>
@@ -367,7 +369,7 @@
             <field name="arch" type="xml">
                 <search string="Search Partner">
                     <field name="name"
-                       filter_domain="['|', '|', '|', '|', ('complete_name', 'ilike', self), ('ref', '=', self), ('email', 'ilike', self), ('vat', 'ilike', self), ('company_registry', 'ilike', self)]"/>
+                       filter_domain="['|', '|', '|', '|', ('complete_name', 'ilike', self), ('ref', 'ilike', self), ('email', 'ilike', self), ('vat', 'ilike', self), ('company_registry', 'ilike', self)]"/>
                     <field name="parent_id" domain="[('is_company', '=', True)]" operator="child_of"/>
                     <field name="email" filter_domain="[('email', 'ilike', self)]"/>
                     <field name="phone" filter_domain="['|', ('phone', 'ilike', self), ('mobile', 'ilike', self)]"/>

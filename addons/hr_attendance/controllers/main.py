@@ -1,8 +1,9 @@
-# -*- coding: utf-8 -*-
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
+from odoo.service.common import exp_version
 from odoo import http, _
 from odoo.http import request
+from odoo.osv import expression
 from odoo.tools import float_round, SQL
 from odoo.tools.image import image_data_uri
 
@@ -36,7 +37,7 @@ class HrAttendance(http.Controller):
             response = {
                 **HrAttendance._get_user_attendance_data(employee),
                 'employee_name': employee.name,
-                'employee_avatar': image_data_uri(employee.image_256),
+                'employee_avatar': employee.image_256 and image_data_uri(employee.image_256),
                 'total_overtime': float_round(employee.total_overtime, precision_digits=2),
                 'kiosk_delay': employee.company_id.attendance_kiosk_delay * 1000,
                 'attendance': {'check_in': employee.last_attendance_id.check_in,
@@ -84,19 +85,6 @@ class HrAttendance(http.Controller):
         if not company:
             return request.not_found()
         else:
-            employee_list = [{"id": e["id"],
-                              "name": e["name"],
-                              "avatar": image_data_uri(e["avatar_256"]),
-                              "job": e["job_id"][1] if e["job_id"] else False,
-                              "department": {"id": e["department_id"][0] if e["department_id"] else False,
-                                             "name": e["department_id"][1] if e["department_id"] else False
-                                             }
-                              } for e in request.env['hr.employee'].sudo().search_read(domain=[('company_id', '=', company.id)],
-                                                                                       fields=["id",
-                                                                                               "name",
-                                                                                               "avatar_256",
-                                                                                               "job_id",
-                                                                                               "department_id"])]
             department_list = [{'id': dep["id"],
                                  'name': dep["name"],
                                  'count': dep["total_employee"]
@@ -111,6 +99,7 @@ class HrAttendance(http.Controller):
                 kiosk_mode = "settings"
             else:
                 kiosk_mode = company.attendance_kiosk_mode
+            version_info = exp_version()
             return request.render(
                 'hr_attendance.public_kiosk_mode',
                 {
@@ -118,13 +107,13 @@ class HrAttendance(http.Controller):
                         'token': token,
                         'company_id': company.id,
                         'company_name': company.name,
-                        'employees': employee_list,
                         'departments': department_list,
                         'kiosk_mode': kiosk_mode,
                         'from_trial_mode': from_trial_mode,
                         'barcode_source': company.attendance_barcode_source,
                         'lang': company.partner_id.lang,
-                    }
+                        'server_version_info': version_info.get('server_version_info'),
+                    },
                 }
             )
 
@@ -147,15 +136,34 @@ class HrAttendance(http.Controller):
                 return self._get_employee_info_response(employee)
         return {}
 
-    @http.route('/hr_attendance/manual_selection', type="json", auth="public")
     def manual_selection(self, token, employee_id, pin_code):
+        return self.manual_selection_with_geolocation(token, employee_id, pin_code)
+
+    @http.route('/hr_attendance/manual_selection', type="json", auth="public")
+    def manual_selection_with_geolocation(self, token, employee_id, pin_code, latitude=False, longitude=False):
         company = self._get_company(token)
         if company:
             employee = request.env['hr.employee'].sudo().browse(employee_id)
             if employee.company_id == company and ((not company.attendance_kiosk_use_pin) or (employee.pin == pin_code)):
-                employee.sudo()._attendance_action_change(self._get_geoip_response('kiosk'))
+                employee.sudo()._attendance_action_change(self._get_geoip_response('kiosk', latitude=latitude, longitude=longitude))
                 return self._get_employee_info_response(employee)
         return {}
+
+    @http.route('/hr_attendance/employees_infos', type="json", auth="public")
+    def employees_infos(self, token, limit, offset, domain):
+        company = self._get_company(token)
+        if company:
+            domain = expression.AND([domain, [('company_id', '=', company.id)]])
+            employees = request.env['hr.employee'].sudo().search_fetch(domain, ['id', 'display_name', 'job_id'],
+                limit=limit, offset=offset, order="name, id")
+            employees_data = [{
+                'id': employee.id,
+                'display_name': employee.display_name,
+                'job_id': employee.job_id.name,
+                'avatar': image_data_uri(employee.avatar_128)
+            } for employee in employees]
+            return {'records': employees_data, 'length': request.env['hr.employee'].sudo().search_count(domain)}
+        return []
 
     @http.route('/hr_attendance/systray_check_in_out', type="json", auth="user")
     def systray_attendance(self, latitude=False, longitude=False):
@@ -166,7 +174,7 @@ class HrAttendance(http.Controller):
         employee._attendance_action_change(geo_ip_response)
         return self._get_employee_info_response(employee)
 
-    @http.route('/hr_attendance/attendance_user_data', type="json", auth="user")
+    @http.route('/hr_attendance/attendance_user_data', type="json", auth="user", readonly=True)
     def user_attendance_data(self):
         employee = request.env.user.employee_id
         return self._get_user_attendance_data(employee)

@@ -267,6 +267,7 @@ export function createRelatedModels(modelDefs, modelClasses = {}, indexes = {}) 
     const orderedRecords = reactive(mapObj(processedModelDefs, () => reactive([])));
     const callbacks = mapObj(processedModelDefs, () => []);
     const baseData = {};
+    const missingFields = {};
 
     // object: model -> key -> keyval -> record
     const indexedRecords = reactive(
@@ -687,9 +688,10 @@ export function createRelatedModels(modelDefs, modelClasses = {}, indexes = {}) 
                     }
 
                     if (field.type === "many2one") {
-                        result[name] = record[name] ? record[name].id : false;
+                        result[name] = record[name]?.id || (!orm && record.raw[name]) || false;
                     } else if (X2MANY_TYPES.has(field.type)) {
-                        result[name] = [...record[name]].map((record) => record.id);
+                        const ids = [...record[name]].map((record) => record.id);
+                        result[name] = ids.length ? ids : (!orm && record.raw[name]) || [];
                     } else if (typeof record[name] === "object") {
                         result[name] = JSON.stringify(record[name]);
                     } else {
@@ -786,6 +788,17 @@ export function createRelatedModels(modelDefs, modelClasses = {}, indexes = {}) 
             const rec = records[model];
 
             for (const data of Object.values(rec)) {
+                const rawLine = rawData[model].find((r) => r[key] === data[key]);
+                if (rawLine) {
+                    for (const [f, p] of Object.entries(modelClasses[model]?.extraFields || {})) {
+                        if (X2MANY_TYPES.has(p.type)) {
+                            rawLine[f] = data[f]?.map((r) => r.id) || [];
+                            continue;
+                        }
+                        rawLine[f] = data[f]?.id || false;
+                    }
+                }
+
                 if (rawDataIdx.includes(data[key])) {
                     if (data.uiState) {
                         uiState[data[key]] = { ...data.uiState };
@@ -818,8 +831,13 @@ export function createRelatedModels(modelDefs, modelClasses = {}, indexes = {}) 
      */
     function loadData(rawData, load = [], fromSerialized = false) {
         const results = {};
+        const oldStates = {};
 
         for (const model in rawData) {
+            if (!oldStates[model]) {
+                oldStates[model] = {};
+            }
+
             if (!load.includes(model) && load.length !== 0) {
                 continue;
             } else if (!results[model]) {
@@ -843,6 +861,11 @@ export function createRelatedModels(modelDefs, modelClasses = {}, indexes = {}) 
                 }
 
                 baseData[model][record.id] = record;
+
+                if (records[model][record.id]) {
+                    oldStates[model][record.id] = records[model][record.id].serializeState();
+                }
+
                 const result = create(model, record, true, false, true);
 
                 if (!(model in results)) {
@@ -868,6 +891,16 @@ export function createRelatedModels(modelDefs, modelClasses = {}, indexes = {}) 
             for (const rawRec of rawRecords) {
                 const recorded = records[model][rawRec.id];
 
+                // Check if there are any missing fields for this record
+                const key = `${model}_${rawRec.id}`;
+                if (missingFields[key]) {
+                    for (const [record, field] of missingFields[key]) {
+                        // Connect the `recorded` to the missing `field` in `record`
+                        connect(field, record, recorded);
+                    }
+                    delete missingFields[key];
+                }
+
                 for (const name in fields) {
                     const field = fields[name];
                     alreadyLinkedSet.add(field);
@@ -879,6 +912,13 @@ export function createRelatedModels(modelDefs, modelClasses = {}, indexes = {}) 
                                     const toConnect = records[field.relation][id];
                                     if (toConnect) {
                                         connect(field, recorded, toConnect);
+                                    } else {
+                                        const key = `${field.relation}_${id}`;
+                                        if (!missingFields[key]) {
+                                            missingFields[key] = [[recorded, field]];
+                                        } else {
+                                            missingFields[key].push([recorded, field]);
+                                        }
                                     }
                                 }
                             }
@@ -889,16 +929,14 @@ export function createRelatedModels(modelDefs, modelClasses = {}, indexes = {}) 
                             const toConnect = records[field.relation][id];
                             if (toConnect) {
                                 connect(field, recorded, toConnect);
+                            } else {
+                                const key = `${field.relation}_${id}`;
+                                if (!missingFields[key]) {
+                                    missingFields[key] = [[recorded, field]];
+                                } else {
+                                    missingFields[key].push([recorded, field]);
+                                }
                             }
-                        }
-                    }
-                    // Connect existing records in case of post-loading
-                    if (name.includes("<-")) {
-                        const toConnect = Object.values(records[field.relation]).filter(
-                            (r) => r.raw[field.inverse_name] === rawRec.id
-                        );
-                        for (const rec of toConnect) {
-                            connect(field, recorded, rec);
                         }
                     }
                 }
@@ -910,6 +948,10 @@ export function createRelatedModels(modelDefs, modelClasses = {}, indexes = {}) 
         // Setup all records when relations are linked
         for (const { raw, record } of modelToSetup) {
             record.setup(raw);
+
+            if (oldStates[record.model.modelName][record.id]) {
+                record.setupState(oldStates[record.model.modelName][record.id]);
+            }
         }
 
         makeRecordsAvailable(results, rawData);

@@ -19,8 +19,16 @@ class WebsiteSnippetFilter(models.Model):
         website = self.env['website'].get_current_website()
         if self.model_name == 'product.product' and not website.has_ecommerce_access():
             return []
-
-        return super()._prepare_values(**kwargs)
+        hide_variants = False
+        search_domain = kwargs.get('search_domain')
+        if self.filter_id and search_domain and 'hide_variants' in search_domain:
+            hide_variants = True
+            search_domain.remove('hide_variants')
+            kwargs['search_domain'] = search_domain
+        return super(
+            WebsiteSnippetFilter,
+            self.with_context(hide_variants=hide_variants),
+        )._prepare_values(**kwargs)
 
     @api.model
     def _get_website_currency(self):
@@ -102,7 +110,7 @@ class WebsiteSnippetFilter(models.Model):
             hide_variants = True
             search_domain.remove('hide_variants')
         domain = expression.AND([
-            [('website_published', '=', True)] if self.env.user._is_public() else [],
+            [('website_published', '=', True)] if self.env.user._is_public() or self.env.user._is_portal() else [],
             website.website_domain(),
             [('company_id', 'in', [False, website.company_id.id])],
             search_domain or [],
@@ -159,7 +167,9 @@ class WebsiteSnippetFilter(models.Model):
         self, website, limit, domain, product_template_id, **kwargs,
     ):
         products = self.env['product.product']
-        current_template = self.env['product.template'].browse(int(product_template_id)).exists()
+        current_template = self.env['product.template'].browse(
+            product_template_id and int(product_template_id)
+        ).exists()
         if current_template:
             sale_orders = self.env['sale.order'].sudo().search([
                 ('website_id', '=', website.id),
@@ -185,7 +195,9 @@ class WebsiteSnippetFilter(models.Model):
 
     def _get_products_accessories(self, website, limit, domain, product_template_id=None, **kwargs):
         products = self.env['product.product']
-        current_template = self.env['product.template'].browse(int(product_template_id)).exists()
+        current_template = self.env['product.template'].browse(
+            product_template_id and int(product_template_id)
+        ).exists()
         if current_template:
             excluded_products = website.sale_get_order().order_line.product_id.ids
             excluded_products.extend(current_template.product_variant_ids.ids)
@@ -205,7 +217,9 @@ class WebsiteSnippetFilter(models.Model):
         self, website, limit, domain, product_template_id=None, **kwargs,
     ):
         products = self.env['product.product']
-        current_template = self.env['product.template'].browse(int(product_template_id)).exists()
+        current_template = self.env['product.template'].browse(
+            product_template_id and int(product_template_id)
+        ).exists()
         if current_template:
             excluded_products = website.sale_get_order().order_line.product_id
             excluded_products |= current_template.product_variant_ids
@@ -223,13 +237,3 @@ class WebsiteSnippetFilter(models.Model):
                 ).search(domain, limit=limit)
         return products
 
-    def _prepare_values(self, limit=None, search_domain=None):
-        hide_variants = False
-        if self.filter_id and search_domain and 'hide_variants' in search_domain:
-            hide_variants = True
-            search_domain.remove('hide_variants')
-            search_domain = search_domain or None
-        return super(
-            WebsiteSnippetFilter,
-            self.with_context(hide_variants=hide_variants)
-        )._prepare_values(limit, search_domain)

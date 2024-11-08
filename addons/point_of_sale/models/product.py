@@ -26,9 +26,10 @@ class ProductTemplate(models.Model):
         product_ctx = dict(self.env.context or {}, active_test=False)
         if self.with_context(product_ctx).search_count([('id', 'in', self.ids), ('available_in_pos', '=', True)]):
             if self.env['pos.session'].sudo().search_count([('state', '!=', 'closed')]):
-                raise UserError(_("To delete a product, make sure all point of sale sessions are closed.\n\n"
-                    "Deleting a product available in a session would be like attempting to snatch a"
-                    "hamburger from a customer’s hand mid-bite; chaos will ensue as ketchup and mayo go flying everywhere!"))
+                raise UserError(_(
+                    "To delete a product, make sure all point of sale sessions are closed.\n\n"
+                    "Deleting a product available in a session would be like attempting to snatch a hamburger from a customer’s hand mid-bite; chaos will ensue as ketchup and mayo go flying everywhere!",
+                ))
 
     def _prepare_tooltip(self):
         tooltip = super()._prepare_tooltip()
@@ -106,8 +107,8 @@ class ProductProduct(models.Model):
     @api.model
     def _load_pos_data_fields(self, config_id):
         return [
-            'id', 'display_name', 'lst_price', 'standard_price', 'categ_id', 'pos_categ_ids', 'taxes_id', 'barcode', 'name',
-            'default_code', 'to_weight', 'uom_id', 'description_sale', 'description', 'product_tmpl_id', 'tracking', 'type', 'service_tracking',
+            'id', 'display_name', 'lst_price', 'list_price', 'standard_price', 'categ_id', 'pos_categ_ids', 'taxes_id', 'barcode', 'name',
+            'default_code', 'to_weight', 'uom_id', 'description_sale', 'description', 'product_tmpl_id', 'tracking', 'type', 'service_tracking', 'is_storable',
             'write_date', 'available_in_pos', 'attribute_line_ids', 'active', 'image_128', 'combo_ids', 'product_template_variant_value_ids',
         ]
 
@@ -119,17 +120,27 @@ class ProductProduct(models.Model):
             products = config_id.with_context({**self.env.context, 'display_default_code': False}).get_limited_products_loading(fields)
         else:
             domain = self._load_pos_data_domain(data)
-            products = self.with_context({**self.env.context, 'display_default_code': False}).search_read(
-                domain,
-                fields,
-                order='sequence,default_code,name',
-                load=False)
-
+            products = self._load_product_with_domain(domain, config_id.id)
+        self._add_missing_products(products, config_id.id, data)
         self._process_pos_ui_product_product(products, config_id)
         return {
             'data': products,
             'fields': fields,
         }
+
+    def _add_missing_products(self, products, config_id, data):
+        product_ids_in_loaded_lines = {line['product_id'] for line in data['pos.order.line']['data']}
+        not_loaded_product_ids = product_ids_in_loaded_lines - {product['id'] for product in products}
+        products.extend(self._load_product_with_domain([('id', 'in', list(not_loaded_product_ids))], config_id, True))
+
+    def _load_product_with_domain(self, domain, config_id, load_archived=False):
+        fields = self._load_pos_data_fields(config_id)
+        context = {**self.env.context, 'display_default_code': False, 'active_test': not load_archived}
+        return self.with_context(context).search_read(
+            domain,
+            fields,
+            order='sequence,default_code,name',
+            load=False)
 
     def _process_pos_ui_product_product(self, products, config_id):
 
@@ -154,6 +165,8 @@ class ProductProduct(models.Model):
             for tax in taxes:
                 taxes_by_company[tax.company_id.id].add(tax.id)
 
+        loaded_product_tmpl_ids = list({p['product_tmpl_id'] for p in products})
+        archived_combinations = self._get_archived_combinations_per_product_tmpl_id(loaded_product_tmpl_ids)
         different_currency = config_id.currency_id != self.env.company.currency_id
         for product in products:
             if different_currency:
@@ -163,21 +176,31 @@ class ProductProduct(models.Model):
             if len(taxes_by_company) > 1 and len(product['taxes_id']) > 1:
                 product['taxes_id'] = filter_taxes_on_company(product['taxes_id'], taxes_by_company)
 
+            if archived_combinations.get(product['product_tmpl_id']):
+                product['_archived_combinations'] = archived_combinations[product['product_tmpl_id']]
+
+    def _get_archived_combinations_per_product_tmpl_id(self, product_tmpl_ids):
+        archived_combinations = {}
+        for product_tmpl in self.env['product.template'].browse(product_tmpl_ids):
+            archived_combinations[product_tmpl.id] = product_tmpl._get_attribute_exclusions()['archived_combinations']
+        return archived_combinations
+
     @api.ondelete(at_uninstall=False)
     def _unlink_except_active_pos_session(self):
         product_ctx = dict(self.env.context or {}, active_test=False)
         if self.env['pos.session'].sudo().search_count([('state', '!=', 'closed')]):
             if self.with_context(product_ctx).search_count([('id', 'in', self.ids), ('product_tmpl_id.available_in_pos', '=', True)]):
-                raise UserError(_("To delete a product, make sure all point of sale sessions are closed.\n\n"
-                    "Deleting a product available in a session would be like attempting to snatch a"
-                    "hamburger from a customer’s hand mid-bite; chaos will ensue as ketchup and mayo go flying everywhere!"))
+                raise UserError(_(
+                    "To delete a product, make sure all point of sale sessions are closed.\n\n"
+                    "Deleting a product available in a session would be like attempting to snatch a hamburger from a customer’s hand mid-bite; chaos will ensue as ketchup and mayo go flying everywhere!",
+                ))
 
     def get_product_info_pos(self, price, quantity, pos_config_id):
         self.ensure_one()
         config = self.env['pos.config'].browse(pos_config_id)
 
         # Tax related
-        taxes = self.taxes_id.compute_all(price, config.currency_id, quantity, self)
+        taxes = self.taxes_id.compute_all(self.product_tmpl_id.list_price, config.currency_id, quantity, self)
         grouped_taxes = {}
         for tax in taxes['taxes']:
             if tax['id'] in grouped_taxes:
@@ -204,11 +227,19 @@ class ProductProduct(models.Model):
 
         # Warehouses
         warehouse_list = [
-            {'name': w.name,
+            {'id': w.id,
+            'name': w.name,
             'available_quantity': self.with_context({'warehouse_id': w.id}).qty_available,
             'forecasted_quantity': self.with_context({'warehouse_id': w.id}).virtual_available,
             'uom': self.uom_name}
-            for w in self.env['stock.warehouse'].search([])]
+            for w in self.env['stock.warehouse'].search([('company_id', '=', config.company_id.id)])]
+
+        if config.picking_type_id.warehouse_id:
+            # Sort the warehouse_list, prioritizing config.picking_type_id.warehouse_id
+            warehouse_list = sorted(
+                warehouse_list,
+                key=lambda w: w['id'] != config.picking_type_id.warehouse_id.id
+            )
 
         # Suppliers
         key = itemgetter('partner_id')
@@ -233,7 +264,8 @@ class ProductProduct(models.Model):
             'pricelists': pricelist_list,
             'warehouses': warehouse_list,
             'suppliers': supplier_list,
-            'variants': variant_list
+            'variants': variant_list,
+            'total_qty_available': self.product_tmpl_id.qty_available
         }
 
 
@@ -269,6 +301,11 @@ class ProductTemplateAttributeLine(models.Model):
     def _load_pos_data_fields(self, config_id):
         return ['display_name', 'attribute_id', 'product_template_value_ids']
 
+    @api.model
+    def _load_pos_data_domain(self, data):
+        loaded_product_tmpl_ids = list({p['product_tmpl_id'] for p in data['product.product']['data']})
+        return [('product_tmpl_id', 'in', loaded_product_tmpl_ids)]
+
 
 class ProductTemplateAttributeValue(models.Model):
     _name = 'product.template.attribute.value'
@@ -276,7 +313,13 @@ class ProductTemplateAttributeValue(models.Model):
 
     @api.model
     def _load_pos_data_domain(self, data):
-        return AND([[('ptav_active', '=', True)], [('attribute_id', 'in', [attr['id'] for attr in data['product.attribute']['data']])]])
+        ptav_ids = {ptav_id for p in data['product.product']['data'] for ptav_id in p['product_template_variant_value_ids']}
+        ptav_ids.update({ptav_id for ptal in data['product.template.attribute.line']['data'] for ptav_id in ptal['product_template_value_ids']})
+        return AND([
+            [('ptav_active', '=', True)],
+            [('attribute_id', 'in', [attr['id'] for attr in data['product.attribute']['data']])],
+            [('id', 'in', list(ptav_ids))]
+        ])
 
     @api.model
     def _load_pos_data_fields(self, config_id):
@@ -305,7 +348,7 @@ class UomCateg(models.Model):
 
     @api.model
     def _load_pos_data_domain(self, data):
-        return [('uom_ids', 'in', [uom['category_id'] for uom in data['uom.uom']['data']])]
+        return [('id', 'in', [uom['category_id'] for uom in data['uom.uom']['data']])]
 
     @api.model
     def _load_pos_data_fields(self, config_id):

@@ -160,13 +160,6 @@ class SaleOrder(models.Model):
 
     #=== ACTION METHODS ===#
 
-    def action_confirm(self):
-        res = super().action_confirm()
-        for order in self:
-            if not order.transaction_ids and not order.amount_total and self._context.get('send_email'):
-                order._send_order_confirmation_mail()
-        return res
-
     def action_preview_sale_order(self):
         action = super().action_preview_sale_order()
         if action['url'].startswith('/'):
@@ -714,3 +707,6 @@ class SaleOrder(models.Model):
 
         if not self.only_services and not self.carrier_id:
             raise ValidationError(_("No shipping method is selected."))
+
+    def _is_delivery_ready(self):
+        return not self._has_deliverable_products() or self.carrier_id

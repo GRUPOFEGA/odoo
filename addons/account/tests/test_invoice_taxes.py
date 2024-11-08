@@ -733,3 +733,129 @@ class TestInvoiceTaxes(AccountTestInvoicingCommon):
             'credit': 10.0,
             'debit': 0,
         }])
+
+    def test_is_base_affected(self):
+        include_base_amount_true_tax = self.env['account.tax'].create({
+            'name': 'Test 5 set affect Base of Subsequent Taxes',
+            'amount_type': 'percent',
+            'amount': 5,
+            'include_base_amount': True,
+            'sequence': 1,
+            'invoice_repartition_line_ids': [
+                (0, 0, {
+                    'repartition_type': 'base',
+                    'tag_ids': [(6, 0, self.base_tag_pos.ids)],
+                }),
+                (0, 0, {
+                    'repartition_type': 'tax',
+                    'tag_ids': [(6, 0, self.tax_tag_pos.ids)],
+                }),
+            ],
+            'refund_repartition_line_ids': [
+                (0, 0, {
+                    'repartition_type': 'base',
+                    'tag_ids': [(6, 0, self.base_tag_neg.ids)],
+                }),
+                (0, 0, {
+                    'repartition_type': 'tax',
+                    'tag_ids': [(6, 0, self.tax_tag_neg.ids)],
+                }),
+            ],
+        })
+
+        # No Base Affected by Previous Taxes
+        is_base_affected_false_tax = include_base_amount_true_tax.copy({
+            'name': 'Test 10 Not set Base Affected by Previous Taxes',
+            'amount': 10,
+            'is_base_affected': False,
+            'sequence': 3,
+        })
+        invoice = self._create_invoice([
+            (100, include_base_amount_true_tax + is_base_affected_false_tax),
+        ])
+        self.assertRecordValues(invoice.line_ids.filtered('tax_line_id'), [
+            {
+                'tax_ids': [],
+                'tax_tag_ids': self.tax_tag_pos.ids,
+                'tax_base_amount': 100,
+                'balance': -5,
+            },
+            {
+                'tax_ids': [],
+                'tax_tag_ids': self.tax_tag_pos.ids,
+                'tax_base_amount': 100,
+                'balance': -10,
+            },
+        ])
+
+        # No Base Affected by Previous Taxes
+        is_base_affected_true_tax = include_base_amount_true_tax.copy({
+            'name': 'Test 10 set Base Affected by Previous Taxes',
+            'amount': 10,
+            'is_base_affected': True,
+            'sequence': 2,
+        })
+        invoice = self._create_invoice([
+            (100, include_base_amount_true_tax + is_base_affected_true_tax),
+        ])
+        self.assertRecordValues(invoice.line_ids.filtered('tax_line_id'), [
+            {
+                'tax_ids': is_base_affected_true_tax.ids,
+                'tax_tag_ids': self.tax_tag_pos.ids + self.base_tag_pos.ids,
+                'tax_base_amount': 100,
+                'balance': -5,
+            },
+            {
+                'tax_ids': [],
+                'tax_tag_ids': self.tax_tag_pos.ids,
+                'tax_base_amount': 105,
+                'balance': -10.5,
+            },
+        ])
+
+    def test_tax_line_amount_currency_modification_auto_balancing(self):
+        date = '2017-01-01'
+        move = self.env['account.move'].create({
+            'move_type': 'out_invoice',
+            'date': date,
+            'partner_id': self.partner_a.id,
+            'invoice_date': date,
+            'currency_id': self.other_currency.id,
+            'invoice_payment_term_id': self.pay_terms_a.id,
+            'invoice_line_ids': [
+                Command.create({
+                    'name': self.product_a.name,
+                    'product_id': self.product_a.id,
+                    'product_uom_id': self.product_a.uom_id.id,
+                    'quantity': 1.0,
+                    'price_unit': 1000,
+                    'tax_ids': self.product_a.taxes_id.ids,
+                }),
+                Command.create({
+                    'name': self.product_b.name,
+                    'product_id': self.product_b.id,
+                    'product_uom_id': self.product_b.uom_id.id,
+                    'quantity': 1.0,
+                    'price_unit': 200,
+                    'tax_ids': self.product_b.taxes_id.ids,
+                }),
+            ]
+        })
+        receivable_line = move.line_ids.filtered(lambda line: line.display_type == 'payment_term')
+        self.assertRecordValues(receivable_line, [
+            {'amount_currency': 1410.00, 'balance': 705.00},
+        ])
+
+        # Modify the tax lines
+        tax_lines = move.line_ids.filtered(lambda line: line.display_type == 'tax').sorted('amount_currency')
+        self.assertRecordValues(tax_lines, [
+            {'amount_currency': -180.00, 'balance': -90.00},
+            {'amount_currency': -30.00, 'balance': -15.00},
+        ])
+        tax_lines[0].amount_currency = -180.03
+        # The following line should not cause the move to become unbalanced; i.e. there should be no error
+        tax_lines[1].amount_currency = -29.99
+
+        self.assertRecordValues(receivable_line, [
+            {'amount_currency': 1410.02, 'balance': 705.02},
+        ])

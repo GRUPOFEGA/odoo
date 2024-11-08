@@ -111,6 +111,7 @@ class AccountMove(models.Model):
             and not self.l10n_es_edi_facturae_xml_id \
             and not self.l10n_es_is_simplified \
             and self.is_invoice(include_receipts=True) \
+            and (self.partner_id.is_company or self.partner_id.vat) \
             and self.company_id.country_code == 'ES' \
             and self.company_id.currency_id.name == 'EUR'
 
@@ -294,10 +295,17 @@ class AccountMove(models.Model):
             tax_withheld_output = [self._l10n_es_edi_facturae_convert_computed_tax_to_template(tax) for tax in taxes_withheld_computed]
             totals['total_taxes_withheld'] += sum((abs(tax["tax_amount"]) for tax in taxes_withheld_computed))
 
+            receiver_transaction_reference = (
+                line.sale_line_ids.order_id.client_order_ref[:20]
+                if 'sale_line_ids' in line._fields and line.sale_line_ids.order_id.client_order_ref
+                else False
+            )
+
             invoice_line_values.update({
+                'ReceiverTransactionReference': receiver_transaction_reference,
                 'FileReference': self.ref[:20] if self.ref else False,
                 'FileDate': fields.Date.context_today(self),
-                'ItemDescription': line.product_id.display_name or line.name,
+                'ItemDescription': line.name,
                 'Quantity': line.quantity,
                 'UnitOfMeasure': line.product_uom_id.l10n_es_edi_facturae_uom_code,
                 'UnitPriceWithoutTax': line.currency_id.round(price_before_discount / line.quantity if line.quantity else 0.),
@@ -327,6 +335,18 @@ class AccountMove(models.Model):
 
         :return: (data needed to render the full template, data needed to render the signature template)
         """
+        def extract_party_name(party):
+            name = {'firstname': 'UNKNOWN', 'surname': 'UNKNOWN', 'surname2': ''}
+            if not party.is_company:
+                name_split = [part for part in party.name.replace(', ', ' ').split(' ') if part]
+                if len(name_split) > 2:
+                    name['firstname'] = ' '.join(name_split[:-2])
+                    name['surname'], name['surname2'] = name_split[-2:]
+                elif len(name_split) == 2:
+                    name['firstname'] = ' '.join(name_split[:-1])
+                    name['surname'] = name_split[-1]
+            return name
+
         self.ensure_one()
         company = self.company_id
         partner = self.commercial_partner_id
@@ -345,16 +365,6 @@ class AccountMove(models.Model):
         legal_literals = self.narration.striptags() if self.narration else False
         legal_literals = legal_literals.split(";") if legal_literals else False
 
-        partner_name = {'firstname': 'UNKNOWN', 'surname': 'UNKNOWN', 'surname2': ''}
-        if not partner.is_company:
-            name_split = [part for part in partner.name.replace(', ', ' ').split(' ') if part]
-            if len(name_split) > 2:
-                partner_name['firstname'] = ' '.join(name_split[:-2])
-                partner_name['surname'], partner_name['surname2'] = name_split[-2:]
-            elif len(name_split) == 2:
-                partner_name['firstname'] = ' '.join(name_split[:-1])
-                partner_name['surname'] = name_split[-1]
-
         invoice_issuer_signature_type = 'supplier' if self.move_type == 'out_invoice' else 'customer'
         invoicing_period = {
             'StartDate': self.l10n_es_invoicing_period_start_date,
@@ -370,11 +380,12 @@ class AccountMove(models.Model):
         template_values = {
             'self_party': company.partner_id,
             'self_party_country_code': COUNTRY_CODE_MAP[company.country_id.code],
+            'self_party_name': extract_party_name(company.partner_id),
             'self_party_administrative_centers': self._l10n_es_edi_facturae_get_administrative_centers(company.partner_id),
             'other_party': partner,
             'other_party_country_code': COUNTRY_CODE_MAP[partner.country_id.code],
             'other_party_phone': partner.phone.translate(PHONE_CLEAN_TABLE) if partner.phone else False,
-            'other_party_name': partner_name,
+            'other_party_name': extract_party_name(partner),
             'other_party_administrative_centers': self._l10n_es_edi_facturae_get_administrative_centers(partner),
             'is_outstanding': self.move_type.startswith('out_'),
             'float_repr': float_repr,
@@ -693,3 +704,8 @@ class AccountMove(models.Model):
         code_and_name = re.match(r"(\[(?P<default_code>.*?)\]\s)?(?P<name>.*)", item_description).groupdict()
         product = self.env['product.product']._retrieve_product(**code_and_name)
         return product
+
+    def _generate_pdf_and_send_invoice(self, template, force_synchronous=True, allow_fallback_pdf=True, bypass_download=False, **kwargs):
+        if self.company_id.country_code == "ES" and not self.company_id.l10n_es_edi_facturae_certificate_id:
+            kwargs['l10n_es_edi_facturae_checkbox_xml'] = False
+        return super()._generate_pdf_and_send_invoice(template, force_synchronous, allow_fallback_pdf, bypass_download, **kwargs)

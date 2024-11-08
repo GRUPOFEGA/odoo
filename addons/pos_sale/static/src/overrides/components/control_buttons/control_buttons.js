@@ -10,6 +10,11 @@ patch(ControlButtons.prototype, {
             resModel: "sale.order",
             noCreate: true,
             multiSelect: false,
+            domain: [
+                ["state", "!=", "cancel"],
+                ["invoice_status", "!=", "invoiced"],
+                ["currency_id", "=", this.pos.currency.id],
+            ],
             onSelected: async (resIds) => {
                 await this.pos.onClickSaleOrder(resIds[0]);
             },

@@ -28,15 +28,6 @@ export class DataServiceOptions {
                     typeof record.pos_order_line_id.order_id.id === "number",
             },
             {
-                name: "product.product",
-                key: "id",
-                condition: (record) => {
-                    return record.models["pos.order.line"].find(
-                        (l) => l.product_id?.id === record.id
-                    );
-                },
-            },
-            {
                 name: "product.attribute.custom.value",
                 key: "id",
                 condition: (record) => {

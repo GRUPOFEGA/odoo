@@ -160,6 +160,10 @@ class AccountMove(models.Model):
         self.ensure_one()
         return False
 
+    def _can_be_unlinked(self):
+        self.ensure_one()
+        return (self.country_code != 'IN' or not self.posted_before) and super()._can_be_unlinked()
+
     def _generate_qr_code(self, silent_errors=False):
         self.ensure_one()
         if self.company_id.country_code == 'IN':
@@ -189,6 +193,7 @@ class AccountMove(models.Model):
                 'l10n_in_hsn_code': line.l10n_in_hsn_code,
                 'quantity': line.quantity,
                 'price_unit': line.price_unit,
+                'discount': line.discount or 0.0,
                 'product_values': product_values,
                 'uom': {'id': line.product_uom_id.id, 'name': line.product_uom_id.name},
                 'taxes_data': taxes_data,

@@ -730,15 +730,18 @@ var SnippetEditor = Widget.extend({
         this.selectorLockWithin = new Set();
         const selectorExcludeAncestor = new Set();
 
-        var $element = this.$target.parent();
-        while ($element.length) {
-            var parentEditor = $element.data('snippet-editor');
-            if (parentEditor) {
-                this._customize$Elements = this._customize$Elements
-                    .concat(parentEditor._customize$Elements);
-                break;
+        if (this.options.allowParentsEditors) {
+            // TODO Should not rely on .data('snippet-editor') but ask parents
+            var $element = this.$target.parent();
+            while ($element.length) {
+                var parentEditor = $element.data('snippet-editor');
+                if (parentEditor) {
+                    this._customize$Elements = this._customize$Elements
+                        .concat(parentEditor._customize$Elements);
+                    break;
+                }
+                $element = $element.parent();
             }
-            $element = $element.parent();
         }
 
         var $optionsSection = $(renderToElement('web_editor.customize_block_options_section', {
@@ -1990,7 +1993,7 @@ class SnippetsMenu extends Component {
      * At this stage, references at accessible.
      * It fetches and parses the snippets templates and options, as well as
      * going through a first pass of the invisible elements.
-     * It also initializes click events on the documents, and sets up tooltips. 
+     * It also initializes click events on the documents, and sets up tooltips.
      */
     async start() {
         // TODO: at a later date, we should remove this.$el (maybe when jQuery
@@ -2175,13 +2178,14 @@ class SnippetsMenu extends Component {
             // Note: we cannot listen to keyup in .o_default_snippet_text
             // elements via delegation because keyup only bubbles from focusable
             // elements which contenteditable are not.
-            const selection = this.ownerDocument.getSelection();
+            const selection = this.$body[0].ownerDocument.getSelection();
             if (!selection.rangeCount) {
                 return;
             }
             const range = selection.getRangeAt(0);
-            $(range.startContainer).closest('.o_default_snippet_text').removeClass('o_default_snippet_text');
-            alreadySelectedElements.delete(range.startContainer);
+            const $defaultTextEl = $(range.startContainer).closest('.o_default_snippet_text');
+            $defaultTextEl.removeClass('o_default_snippet_text');
+            alreadySelectedElements.delete($defaultTextEl[0]);
         });
         const refreshSnippetEditors = debounce(() => {
             for (const snippetEditor of this.snippetEditors) {
@@ -2810,6 +2814,15 @@ class SnippetsMenu extends Component {
             // we create editors for invisible elements when translating them,
             // we only want to toggle their visibility when the related sidebar
             // buttons are clicked).
+            const translationEditors = this.snippetEditors.filter(editor => {
+                return this._allowInTranslationMode(editor.$target);
+            });
+            // Before returning, we need to clean editors if their snippets are
+            // allowed in the translation mode.
+            for (const editor of translationEditors) {
+                await editor.cleanForSave();
+                editor.destroy();
+            }
             return;
         }
         const exec = previewMode
@@ -3117,6 +3130,14 @@ class SnippetsMenu extends Component {
         var self = this;
         var $html = $(html);
 
+        // TODO adapt in master. This patches the BlogPostTagSelection option
+        // in stable versions. Done here to avoid converting the html back to
+        // a string.
+        const optionEl = $html.find('[data-js="BlogPostTagSelection"][data-selector=".o_wblog_post_page_cover"]')[0];
+        if (optionEl) {
+            optionEl.dataset.selector = '.o_wblog_post_page_cover[data-res-model="blog.post"]';
+        }
+
         this.templateOptions = [];
         var selectors = [];
         var $styles = $html.find('[data-selector]');
@@ -3200,7 +3221,7 @@ class SnippetsMenu extends Component {
                 const snippet = {
                     id: parseInt(snippetEl.dataset.oeSnippetId) || uniqueId(snippetEl.dataset.moduleId),
                     name: snippetEl.children[0].dataset.snippet,
-                    displayName: escape(snippetEl.getAttribute("name")),
+                    displayName: snippetEl.getAttribute("name"),
                     category: category,
                     content: snippetEl.children,
                     thumbnailSrc: escape(snippetEl.dataset.oeThumbnail),
@@ -3273,7 +3294,8 @@ class SnippetsMenu extends Component {
         }
 
         var def;
-        if (this._allowParentsEditors($snippet)) {
+        const allowParentsEditors = this._allowParentsEditors($snippet);
+        if (allowParentsEditors) {
             var $parent = globalSelector.closest($snippet.parent());
             if ($parent.length) {
                 def = this._createSnippetEditor($parent);
@@ -3291,7 +3313,13 @@ class SnippetsMenu extends Component {
             }
 
             let editableArea = self.getEditableArea();
-            snippetEditor = new SnippetEditor(parentEditor || self, $snippet, self.templateOptions, $snippet.closest('[data-oe-type="html"], .oe_structure').add(editableArea), self.options);
+            snippetEditor = new SnippetEditor(
+                parentEditor || self,
+                $snippet,
+                self.templateOptions,
+                $snippet.closest('[data-oe-type="html"], .oe_structure').add(editableArea),
+                Object.assign({}, self.options, {allowParentsEditors: allowParentsEditors})
+            );
             self.snippetEditors.push(snippetEditor);
             // Keep parent below its child inside the DOM as its `o_handle`
             // needs to be (visually) on top of the child ones.
@@ -3612,16 +3640,7 @@ class SnippetsMenu extends Component {
                     }
 
                     var $target = $toInsert;
-
-                    if ($target[0].classList.contains("o_snippet_drop_in_only")) {
-                        // If it's a "drop in only" snippet, after dropping
-                        // it, we modify it so that it's no longer a
-                        // draggable snippet but rather simple HTML code, as
-                        // if the element had been created with the editor.
-                        $target[0].classList.remove("o_snippet_drop_in_only");
-                        delete $target[0].dataset.snippet;
-                        delete $target[0].dataset.name;
-                    }
+                    this._updateDroppedSnippet($target);
 
                     this.options.wysiwyg.odooEditor.observerUnactive('dragAndDropCreateSnippet');
                     await this._scrollToSnippet($target, this.$scrollable);
@@ -3908,6 +3927,24 @@ class SnippetsMenu extends Component {
      */
     _allowInTranslationMode($snippet) {
         return globalSelector.is($snippet, { onlyTextOptions: true });
+    }
+
+    /**
+     * Allows to update the snippets to build & adapt dynamic content right
+     * after adding it to the DOM.
+     *
+     * @private
+     */
+     _updateDroppedSnippet($target) {
+        if ($target[0].classList.contains("o_snippet_drop_in_only")) {
+            // If it's a "drop in only" snippet, after dropping
+            // it, we modify it so that it's no longer a
+            // draggable snippet but rather simple HTML code, as
+            // if the element had been created with the editor.
+            $target[0].classList.remove("o_snippet_drop_in_only");
+            delete $target[0].dataset.snippet;
+            delete $target[0].dataset.name;
+        }
     }
 
     //--------------------------------------------------------------------------
@@ -4528,7 +4565,7 @@ class SnippetsMenu extends Component {
         await this._updateInvisibleDOM();
     }
     _addToolbar(toolbarMode = "text") {
-        // TODO: Now that the toolbar is not removed every time 
+        // TODO: Now that the toolbar is not removed every time
         // `_updateRightPanelContent` is called, we should probably rename this
         // method ot "_updateToolbar" and remove some of the now useless code,
         // since the only important thing is to check the visibility
@@ -4827,7 +4864,7 @@ class SnippetsMenu extends Component {
     /**
      * Compatibility layer for legacy widgets. Should be removed when everything
      * is converted to OWL.
-     * 
+     *
      * @param ev {CustomEvent}
      */
     _trigger_up(ev) {

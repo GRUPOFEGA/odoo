@@ -14,12 +14,12 @@
         },
         {
             content: "Go to My Expenses",
-            trigger: 'a[data-menu-xmlid="hr_expense.menu_hr_expense_my_expenses"]',
+            trigger: 'button[data-menu-xmlid="hr_expense.menu_hr_expense_my_expenses"]',
             run: "click",
         },
         {
             content: "Go to My Expenses to Report",
-            trigger: 'a[data-menu-xmlid="hr_expense.menu_hr_expense_my_expenses_to_submit"]',
+            trigger: 'a[data-menu-xmlid="hr_expense.menu_hr_expense_my_expenses_all"]',
             run: "click",
         },
         {
@@ -29,6 +29,42 @@
                 const button = document.querySelector('.o_button_upload_expense');
                 if(!button) {
                     console.error('Missing Upload button in My Expenses to Report > List View');
+                }
+            }
+        },
+        {
+            content: "Create a new expense",
+            trigger: "button.o_list_button_add",
+            run: "click",
+        },
+        {
+            content: "Enter category for new expense in Many2One field",
+            trigger: ".o_field_widget.o_field_many2one[name=product_id] input",
+            run: "edit [COMM] Communication",
+        },
+        {
+            isActive: ["auto"],
+            trigger: ".ui-autocomplete > li > a:contains('[COMM] Communication')",
+            run: "click",
+        },
+        {
+            content: "Enter a value for the total",
+            trigger: "div[name=total_amount_currency] input",
+            run: "edit 100",
+        },
+        {
+            content: "Breadcrumb back to My Expenses",
+            trigger: ".breadcrumb-item:contains('My Expenses')",
+            run: "click",
+        },
+        {
+            content: "Check Create Report Button, but not click on it",
+            trigger: "button.o_switch_view.o_list.active",
+            run() {
+                const button = Array.from(document.querySelectorAll('.btn-secondary'))
+                    .filter(element => element.textContent.includes('Create Report'));
+                if(!button) {
+                    console.error('Missing Create Report button in My Expenses to Report > List View');
                 }
             }
         },
@@ -48,8 +84,21 @@
             }
         },
         {
+            content: "Check Create Report button and click on it",
+            trigger: ".btn-secondary:contains(\"Create Report\")",
+            run: "click"
+        },
+        {
+            trigger: ".o_breadcrumb",
+            run: "click",
+        },
+        {
+            content: "Create Report button should not be visible anymore",
+            trigger: '.o_control_panel_main:not(:contains(\"Create Report\"))',
+        },
+        {
             content: "Go to Reporting",
-            trigger: 'a[data-menu-xmlid="hr_expense.menu_hr_expense_reports"]',
+            trigger: 'button[data-menu-xmlid="hr_expense.menu_hr_expense_reports"]',
             run: "click",
         },
         {
@@ -58,27 +107,17 @@
             run: "click",
         },
         {
-            content: "Check Upload Button",
-            trigger: 'li.breadcrumb-item:contains("Expenses Analysis")',
-            run() {
-                const button = document.querySelector('.o_button_upload_expense');
-                if(!button) {
-                    console.error('Missing Upload button in Expenses Analysis > List View');
-                }
-            }
-        },
-        {
-            content: "Go to kanban view",
-            trigger: "button.o_switch_view.o_kanban",
+            content: "Go to list view",
+            trigger: "button.o_switch_view.o_list",
             run: "click",
         },
         {
             content: "Check Upload Button",
-            trigger: "button.o_switch_view.o_kanban.active",
+            trigger: "button.o_switch_view.o_list.active",
             run() {
                 const button = document.querySelector('.o_button_upload_expense');
                 if(!button) {
-                    console.error('Missing Upload button in Expenses Analysis > Kanban View');
+                    console.error('Missing Upload button in Expenses Analysis > List View');
                 }
             }
         },

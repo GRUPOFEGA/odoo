@@ -18,7 +18,7 @@ class ResUsers(models.Model):
 
     oauth_provider_id = fields.Many2one('auth.oauth.provider', string='OAuth Provider')
     oauth_uid = fields.Char(string='OAuth User ID', help="Oauth Provider user_id", copy=False)
-    oauth_access_token = fields.Char(string='OAuth Access Token', readonly=True, copy=False)
+    oauth_access_token = fields.Char(string='OAuth Access Token', readonly=True, copy=False, prefetch=False)
 
     _sql_constraints = [
         ('uniq_users_oauth_provider_oauth_uid', 'unique(oauth_provider_id, oauth_uid)', 'OAuth UID must be unique per provider'),
@@ -134,9 +134,11 @@ class ResUsers(models.Model):
         try:
             return super()._check_credentials(credential, env)
         except AccessDenied:
+            if not (credential['type'] == 'oauth_token' and credential['token']):
+                raise
             passwd_allowed = env['interactive'] or not self.env.user._rpc_api_keys_only()
             if passwd_allowed and self.env.user.active:
-                res = self.sudo().search([('id', '=', self.env.uid), ('oauth_access_token', '=', credential['password'])])
+                res = self.sudo().search([('id', '=', self.env.uid), ('oauth_access_token', '=', credential['token'])])
                 if res:
                     return {
                         'uid': self.env.user.id,

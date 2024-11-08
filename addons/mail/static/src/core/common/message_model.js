@@ -223,9 +223,6 @@ export class Message extends Record {
             }
             return this.author.eq(this.store.self);
         },
-        // FIXME necessary to not trigger double-rendering of messages
-        // lazy-compute on-the-fly notifies the current reactive again
-        eager: true,
     });
 
     isPending = false;
@@ -249,7 +246,8 @@ export class Message extends Record {
     }
 
     get isSubjectDefault() {
-        const threadName = this.thread?.name?.trim().toLowerCase();
+        const name = this.thread?.name;
+        const threadName = name ? name.trim().toLowerCase() : "";
         const defaultSubject = this.default_subject ? this.default_subject.toLowerCase() : "";
         const candidates = new Set([defaultSubject, threadName]);
         return candidates.has(this.subject?.toLowerCase());

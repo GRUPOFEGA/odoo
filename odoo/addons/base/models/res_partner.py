@@ -57,6 +57,15 @@ class FormatAddressMixin(models.AbstractModel):
     _name = "format.address.mixin"
     _description = 'Address Format'
 
+    def _extract_fields_from_address(self, address_line):
+        """
+        Extract keys from the address line.
+        For example, if the address line is "zip: %(zip)s, city: %(city)s.",
+        this method will return ['zip', 'city'].
+        """
+        address_fields = ['%(' + field + ')s' for field in ADDRESS_FIELDS + ('state_code', 'state_name')]
+        return sorted([field[2:-2] for field in address_fields if field in address_line], key=address_line.index)
+
     def _view_get_address(self, arch):
         # consider the country of the user, not the country of the partner we want to display
         address_view_id = self.env.company.country_id.address_view_id.sudo()
@@ -77,12 +86,13 @@ class FormatAddressMixin(models.AbstractModel):
         elif address_format and not self._context.get('no_address_format'):
             # For the zip, city and state fields we need to move them around in order to follow the country address format.
             # The purpose of this is to help the user by following a format he is used to.
-            city_line = [line.split(' ') for line in address_format.split('\n') if 'city' in line]
+            city_line = [self._extract_fields_from_address(line) for line in address_format.split('\n') if 'city' in line]
             if city_line:
-                field_order = [field.replace('%(', '').replace(')s', '') for field in city_line[0]]
+                field_order = city_line[0]
                 for address_node in arch.xpath("//div[hasclass('o_address_format')]"):
-                    concerned_fields = {'zip', 'city', 'state_id'} - {field_order[0]}
-                    current_field = address_node.find(f".//field[@name='{field_order[0]}']")
+                    first_field = field_order[0] if field_order[0] not in ('state_code', 'state_name') else 'state_id'
+                    concerned_fields = {'zip', 'city', 'state_id'} - {first_field}
+                    current_field = address_node.find(f".//field[@name='{first_field}']")
                     # First loop into the fields displayed in the address_format, and order them.
                     for field in field_order[1:]:
                         if field in ('state_code', 'state_name'):
@@ -345,22 +355,24 @@ class Partner(models.Model):
             return "base/static/img/money.png"
         return super()._avatar_get_placeholder_path()
 
+    def _get_complete_name(self):
+        self.ensure_one()
+
+        displayed_types = self._complete_name_displayed_types
+        type_description = dict(self._fields['type']._description_selection(self.env))
+
+        name = self.name or ''
+        if self.company_name or self.parent_id:
+            if not name and self.type in displayed_types:
+                name = type_description[self.type]
+            if not self.is_company:
+                name = f"{self.commercial_company_name or self.sudo().parent_id.name}, {name}"
+        return name.strip()
+
     @api.depends('is_company', 'name', 'parent_id.name', 'type', 'company_name', 'commercial_company_name')
     def _compute_complete_name(self):
-        displayed_types = self._complete_name_displayed_types
-        # determine the labels of partner types to be included
-        # as 'displayed_types' (without user lang to avoid context dependency)
-        type_description = dict(self._fields['type']._description_selection(self.with_context({}).env))
-
         for partner in self:
-            name = partner.name or ''
-            if partner.company_name or partner.parent_id:
-                if not name and partner.type in displayed_types:
-                    name = type_description[partner.type]
-                if not partner.is_company:
-                    name = f"{partner.commercial_company_name or partner.sudo().parent_id.name}, {name}"
-
-            partner.complete_name = name.strip()
+            partner.complete_name = partner.with_context({})._get_complete_name()
 
     @api.depends('lang')
     def _compute_active_lang_count(self):
@@ -446,6 +458,19 @@ class Partner(models.Model):
     def _check_parent_id(self):
         if self._has_cycle():
             raise ValidationError(_('You cannot create recursive Partner hierarchies.'))
+
+    @api.constrains('company_id')
+    def _check_partner_company(self):
+        """
+        Check that for every partner which has a company,
+        if there exists a company linked to that partner,
+        the company_id set on the partner is that company
+        """
+        partners = self.filtered(lambda p: p.is_company and p.company_id)
+        companies = self.env['res.company'].search_fetch([('partner_id', 'in', partners.ids)], ['partner_id'])
+        for company in companies:
+            if company != company.partner_id.company_id:
+                raise ValidationError(_('The company assigned to this partner does not match the company this partner represents.'))
 
     def copy_data(self, default=None):
         default = dict(default or {})
@@ -834,10 +859,10 @@ class Partner(models.Model):
                 }
 
     @api.depends('complete_name', 'email', 'vat', 'state_id', 'country_id', 'commercial_company_name')
-    @api.depends_context('show_address', 'partner_show_db_id', 'address_inline', 'show_email', 'show_vat')
+    @api.depends_context('show_address', 'partner_show_db_id', 'address_inline', 'show_email', 'show_vat', 'lang')
     def _compute_display_name(self):
         for partner in self:
-            name = partner.complete_name
+            name = partner.with_context(lang=self.env.lang)._get_complete_name()
             if partner._context.get('show_address'):
                 name = name + "\n" + partner._display_address(without_company=True)
             name = re.sub(r'\s+\n', '\n', name)

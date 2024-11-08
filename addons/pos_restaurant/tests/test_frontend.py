@@ -8,14 +8,15 @@ from odoo.addons.point_of_sale.tests.test_frontend import TestPointOfSaleHttpCom
 
 
 @odoo.tests.tagged('post_install', '-at_install')
-class TestFrontend(TestPointOfSaleHttpCommon):
+class TestFrontendCommon(TestPointOfSaleHttpCommon):
 
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
         archive_products(cls.env)
 
-        drinks_category = cls.env['pos.category'].create({'name': 'Drinks'})
+        food_category = cls.env['pos.category'].create({'name': 'Food', 'sequence': 1})
+        drinks_category = cls.env['pos.category'].create({'name': 'Drinks', 'sequence': 2})
 
         printer = cls.env['pos.printer'].create({
             'name': 'Preparation Printer',
@@ -147,6 +148,17 @@ class TestFrontend(TestPointOfSaleHttpCommon):
             'taxes_id': [(6, 0, [])],
         })
 
+        # multiple categories product
+        cls.env['product.product'].create({
+            'available_in_pos': True,
+            'list_price': 2.20,
+            'name': 'Test Multi Category Product',
+            'weight': 0.01,
+            'pos_categ_ids': [(4, drinks_category.id), (4, food_category.id)],
+            'categ_id': cls.env.ref('point_of_sale.product_category_pos').id,
+            'taxes_id': [(6, 0, [])],
+        })
+
         # desk organizer (variant product)
         cls.desk_organizer = cls.env['product.product'].create({
             'name': 'Desk Organizer',
@@ -199,6 +211,9 @@ class TestFrontend(TestPointOfSaleHttpCommon):
         pricelist = cls.env['product.pricelist'].create({'name': 'Restaurant Pricelist'})
         cls.pos_config.write({'pricelist_id': pricelist.id})
 
+
+class TestFrontend(TestFrontendCommon):
+
     def test_01_pos_restaurant(self):
         self.pos_user.write({
             'groups_id': [
@@ -248,6 +263,8 @@ class TestFrontend(TestPointOfSaleHttpCommon):
         self.assertTrue(order4.is_tipped and order4.tip_amount == 1.00)
         self.assertTrue(order5.is_tipped and order5.tip_amount == 0.00)
 
+        self.assertEqual(order4.customer_count, 2)
+
     def test_06_split_bill_screen(self):
         self.pos_config.with_user(self.pos_user).open_ui()
         self.start_pos_tour('SplitBillScreenTour2')
@@ -278,3 +295,7 @@ class TestFrontend(TestPointOfSaleHttpCommon):
         self.pos_config.company_id.point_of_sale_use_ticket_qr_code = True
         self.pos_config.with_user(self.pos_user).open_ui()
         self.start_pos_tour('BillScreenTour')
+
+    def test_12_category_check(self):
+        self.pos_config.with_user(self.pos_user).open_ui()
+        self.start_pos_tour('CategLabelCheck')

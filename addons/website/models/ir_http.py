@@ -308,13 +308,14 @@ class Http(models.AbstractModel):
     @classmethod
     def _serve_redirect(cls):
         req_page = request.httprequest.path
+        req_page_with_qs = request.httprequest.environ['REQUEST_URI']
         domain = [
             ('redirect_type', 'in', ('301', '302')),
             # trailing / could have been removed by server_page
-            '|', ('url_from', '=', req_page.rstrip('/')), ('url_from', '=', req_page + '/')
+            ('url_from', 'in', [req_page_with_qs, req_page.rstrip('/'), req_page + '/'])
         ]
         domain += request.website.website_domain()
-        return request.env['website.rewrite'].sudo().search(domain, limit=1)
+        return request.env['website.rewrite'].sudo().search(domain, order='url_from DESC', limit=1)
 
     @classmethod
     def _serve_fallback(cls):
@@ -414,7 +415,7 @@ class Http(models.AbstractModel):
             if not request.env['website'].get_current_website().cookies_bar:
                 # Cookies bar is disabled on this website
                 return True
-            accepted_cookie_types = json_scriptsafe.loads(request.httprequest.cookies.get('website_cookies_bar', '{}'))
+            accepted_cookie_types = json_scriptsafe.loads(request.cookies.get('website_cookies_bar', '{}'))
 
             # pre-16.0 compatibility, `website_cookies_bar` was `"true"`.
             # In that case we delete that cookie and let the user choose again.

@@ -28,7 +28,7 @@
                                 <span t-field="attendee.barcode" class="barcode" t-options="{'widget': 'barcode', 'width': 200, 'height': 84, 'quiet': 0, 'humanreadable': 1}"/>
                             </t>
                             <t t-elif="not attendee">
-                                <span t-out="12345678901234567890" class="barcode" t-options="{'widget': 'barcode', 'width': 200, 'height': 84, 'quiet': 0, 'humanreadable': 1}"/>
+                                <span t-out="'12345678901234567890'" class="barcode" t-options="{'widget': 'barcode', 'width': 200, 'height': 84, 'quiet': 0, 'humanreadable': 1}"/>
                             </t>
                         </t>
                         <div class="o_event_foldable_badge_barcode_container_top mb-2 mt-4">
@@ -109,6 +109,18 @@
     </t>
 </template>
 
+<!-- EVENT ESC/LABEL 96x134mm -->
+
+<template id="event_report_template_esc_label_96x134_badge">
+    <t t-esc="docs._generate_esc_label_badges(is_small_badge=False)"/>
+</template>
+
+<!-- EVENT ESC/LABEL 96x82mm -->
+
+<template id="event_report_template_esc_label_96x82_badge">
+    <t t-esc="docs._generate_esc_label_badges(is_small_badge=True)"/>
+</template>
+
 <!-- EVENT REGISTRATION BADGE - REDIRECTING TO EVENT FORMAT BADGE ABOVE -->
 
 <template id="event_registration_report_template_badge">
@@ -151,7 +163,7 @@
                             <div class="o_event_full_page_left_details_top mb-3">
                                 <h2 class="o_event_full_page_ticket_event_name fw-bold pt-3" t-field="event.name"/>
                                 <t t-set="first_ticket" t-value="event.event_ticket_ids[0] if event.event_ticket_ids else None"/>
-                                <h4 t-if="attendee" class="o_event_full_page_ticket_font_faded o_event_full_page_ticket_type" t-field="attendee.event_ticket_id"/>
+                                <h4 t-if="attendee" class="o_event_full_page_ticket_font_faded o_event_full_page_ticket_type" t-field="attendee.event_ticket_id.name"/>
                                 <h4 t-elif="first_ticket" t-out="first_ticket.name" class="o_event_full_page_ticket_font_faded pe-4"/>
                                 <h4 class="fw-bold mb-3 pb-2" t-if="attendee" t-field="attendee.name"/>
                                 <h4 class="fw-bold mb-3 pb-2" t-elif="not attendee"><span>John Doe</span></h4>
@@ -177,17 +189,17 @@
                                     <div class="d-flex">
                                         <i class="fa fa-calendar fa-2x fa-fw me-2 mt-1"/>
                                         <div t-if="event.is_one_day">
-                                            <span t-field="event.date_begin"
+                                            <span t-field="event.date_begin" class="text-nowrap"
                                                 t-options='{"widget": "datetime", "date_only": True, "tz_name": event.date_tz}'/><br/>
-                                            <span class="me-1">from</span><span t-field="event.date_begin"
+                                            <span class="me-1">from</span><span t-field="event.date_begin" class="text-nowrap"
                                                 t-options='{"widget": "datetime", "time_only": True, "hide_seconds": True, "tz_name": event.date_tz, "format": "short"}'/>
-                                            <span class="me-1">to</span><span t-field="event.date_end"
+                                            <span class="me-1">to</span><span t-field="event.date_end" class="text-nowrap"
                                                 t-options='{"widget": "datetime", "time_only": True, "hide_seconds": True, "tz_name": event.date_tz, "format": "short"}'/>
                                         </div>
                                         <div t-else="">
-                                            <span t-field="event.date_begin"
+                                            <span t-field="event.date_begin" class="text-nowrap"
                                                 t-options='{"widget": "datetime", "tz_name": event.date_tz, "format": "short"}'/><br/>
-                                            <span class="me-1">to</span><span t-field="event.date_end"
+                                            <span class="me-1">to</span><span t-field="event.date_end" class="text-nowrap"
                                                 t-options='{"widget": "datetime", "tz_name": event.date_tz, "format": "short"}'/>
                                         </div>
                                     </div>
@@ -330,7 +342,7 @@
                             <span t-field="attendee.barcode" class="barcode ms-2" t-options="{'widget': 'barcode', 'width': 200, 'height': 84, 'quiet': 0, 'humanreadable': 1}"/>
                         </t>
                         <t t-elif="not attendee">
-                            <span t-out="12345678901234567890" class="barcode ms-2" t-options="{'widget': 'barcode', 'width': 200, 'height': 84, 'quiet': 0, 'humanreadable': 1}"/>
+                            <span t-out="'12345678901234567890'" class="barcode ms-2" t-options="{'widget': 'barcode', 'width': 200, 'height': 84, 'quiet': 0, 'humanreadable': 1}"/>
                         </t>
                     </t>
                 </span>

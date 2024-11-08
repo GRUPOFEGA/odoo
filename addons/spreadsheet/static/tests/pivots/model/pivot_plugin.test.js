@@ -206,6 +206,7 @@ test("Can undo/redo a delete pivot", async function () {
     const value = getEvaluatedCell(model, "B4").value;
     model.dispatch("REMOVE_PIVOT", { pivotId });
     model.dispatch("REQUEST_UNDO");
+    await animationFrame();
     expect(model.getters.getPivotIds().length).toBe(1);
     let B4 = getEvaluatedCell(model, "B4");
     expect(B4.value).toBe(value);
@@ -253,7 +254,7 @@ test("invalid group dimensions", async function () {
         setCellContent(model, "G10", formula);
         expect(getCellValue(model, "G10")).toBe("#ERROR", { message: formula });
         expect(getEvaluatedCell(model, "G10").message).toBe(
-            "Dimensions don't match the pivot definition",
+            "Dimensions don't match the pivot definition. Consider using a dynamic pivot formula: =PIVOT(1). Or re-insert the static pivot from the Data menu.",
             { message: formula }
         );
     }
@@ -322,6 +323,53 @@ test("user context is combined with pivot context to fetch data", async function
     });
     await waitForDataLoaded(model);
     expect.verifySteps(["read_group", "read_group", "read_group", "read_group"]);
+});
+
+test("Context is purged from PivotView related keys", async function (assert) {
+    const spreadsheetData = {
+        sheets: [
+            {
+                id: "sheet1",
+                cells: {
+                    A1: { content: `=ODOO.PIVOT(1, "probability")` },
+                },
+            },
+        ],
+        pivots: {
+            1: {
+                type: "ODOO",
+                columns: [{ name: "foo" }],
+                rows: [{ name: "bar" }],
+                domain: [],
+                measures: [{ name: "probability" }],
+                model: "partner",
+                context: {
+                    pivot_measures: ["__count"],
+                    // inverse row and col group bys
+                    pivot_row_groupby: ["test"],
+                    pivot_column_groupby: ["check"],
+                    dummyKey: "true",
+                },
+            },
+        },
+    };
+
+    const model = await createModelWithDataSource({
+        spreadsheetData,
+        mockRPC: function (route, { model, method, kwargs }) {
+            if (model === "partner" && method === "read_group") {
+                expect.step(`pop`);
+                const hasBadKeys = [
+                    "pivot_measures",
+                    "pivot_row_groupby",
+                    "pivot_column_groupby",
+                ].some((val) => val in (kwargs.context || {}));
+                expect(hasBadKeys).not.toBe(true);
+            }
+        },
+    });
+    await waitForDataLoaded(model);
+    expect.verifySteps(["pop", "pop", "pop", "pop"]);
 });
 
 test("fetch metadata only once per model", async function () {
@@ -874,12 +922,12 @@ test("PIVOT formulas with monetary measure are correctly formatted at evaluation
     expect(getEvaluatedCell(model, "B3").format).toBe("#,##0.00[$€]");
 });
 
-test("PIVOT.HEADER day_of_month are correctly formatted at evaluation", async function () {
+test("PIVOT day_of_month are correctly formatted at evaluation", async function () {
     const { model, pivotId } = await createSpreadsheetWithPivot({
         arch: /* xml */ `
                 <pivot>
                     <field name="date" interval="day" type="col"/>
-                    <field name="foo" type="measure"/>
+                    <field name="probability" type="measure"/>
                 </pivot>`,
     });
     updatePivot(model, pivotId, {
@@ -887,30 +935,37 @@ test("PIVOT.HEADER day_of_month are correctly formatted at evaluation", async fu
     });
     await animationFrame();
     setCellContent(model, "B1", `=PIVOT.HEADER(1, "date:day_of_month", 1)`);
+    setCellContent(model, "B2", `=PIVOT.VALUE(1, "probability", "date:day_of_month", 11)`);
     expect(getEvaluatedCell(model, "B1").format).toBe("0");
     expect(getEvaluatedCell(model, "B1").value).toBe(1);
     expect(getEvaluatedCell(model, "B1").formattedValue).toBe("1");
+    expect(getEvaluatedCell(model, "B2").format).toBe("#,##0.00");
+    expect(getEvaluatedCell(model, "B2").value).toBe(15);
+    expect(getEvaluatedCell(model, "B2").formattedValue).toBe("15.00");
 });
 
-test("PIVOT.HEADER day are correctly formatted at evaluation", async function () {
+test("PIVOT day are correctly formatted at evaluation", async function () {
     const { model } = await createSpreadsheetWithPivot({
         arch: /* xml */ `
                 <pivot>
                     <field name="date" interval="day" type="col"/>
-                    <field name="foo" type="measure"/>
+                    <field name="probability" type="measure"/>
                 </pivot>`,
     });
     expect(getEvaluatedCell(model, "B1").format).toBe("m/d/yyyy");
     expect(getEvaluatedCell(model, "B1").value).toBe(42474);
     expect(getEvaluatedCell(model, "B1").formattedValue).toBe("4/14/2016");
+    expect(getEvaluatedCell(model, "B3").format).toBe("#,##0.00");
+    expect(getEvaluatedCell(model, "B3").value).toBe(10);
+    expect(getEvaluatedCell(model, "B3").formattedValue).toBe("10.00");
 });
 
-test("PIVOT.HEADER iso_week_number are correctly formatted at evaluation", async function () {
+test("PIVOT iso_week_number are correctly formatted at evaluation", async function () {
     const { model, pivotId } = await createSpreadsheetWithPivot({
         arch: /* xml */ `
                 <pivot>
                     <field name="date" interval="day" type="col"/>
-                    <field name="foo" type="measure"/>
+                    <field name="probability" type="measure"/>
                 </pivot>`,
     });
     updatePivot(model, pivotId, {
@@ -918,30 +973,37 @@ test("PIVOT.HEADER iso_week_number are correctly formatted at evaluation", async
     });
     await animationFrame();
     setCellContent(model, "B1", `=PIVOT.HEADER(1, "date:iso_week_number", 1)`);
+    setCellContent(model, "B2", `=PIVOT.VALUE(1, "probability", "date:iso_week_number", 15)`);
     expect(getEvaluatedCell(model, "B1").format).toBe("0");
     expect(getEvaluatedCell(model, "B1").value).toBe(1);
     expect(getEvaluatedCell(model, "B1").formattedValue).toBe("1");
+    expect(getEvaluatedCell(model, "B2").format).toBe("#,##0.00");
+    expect(getEvaluatedCell(model, "B2").value).toBe(10);
+    expect(getEvaluatedCell(model, "B2").formattedValue).toBe("10.00");
 });
 
-test("PIVOT.HEADER week are correctly formatted at evaluation", async function () {
+test("PIVOT week are correctly formatted at evaluation", async function () {
     const { model } = await createSpreadsheetWithPivot({
         arch: /* xml */ `
                 <pivot>
                     <field name="date" interval="week" type="col"/>
-                    <field name="foo" type="measure"/>
+                    <field name="probability" type="measure"/>
                 </pivot>`,
     });
     expect(getEvaluatedCell(model, "B1").format).toBe(undefined);
     expect(getEvaluatedCell(model, "B1").value).toBe("W15 2016");
     expect(getEvaluatedCell(model, "B1").formattedValue).toBe("W15 2016");
+    expect(getEvaluatedCell(model, "B3").format).toBe("#,##0.00");
+    expect(getEvaluatedCell(model, "B3").value).toBe(10);
+    expect(getEvaluatedCell(model, "B3").formattedValue).toBe("10.00");
 });
 
-test("PIVOT.HEADER month_number are correctly formatted at evaluation", async function () {
+test("PIVOT month_number are correctly formatted at evaluation", async function () {
     const { model, pivotId } = await createSpreadsheetWithPivot({
         arch: /* xml */ `
                 <pivot>
                     <field name="date" interval="day" type="col"/>
-                    <field name="foo" type="measure"/>
+                    <field name="probability" type="measure"/>
                 </pivot>`,
     });
     updatePivot(model, pivotId, {
@@ -949,30 +1011,37 @@ test("PIVOT.HEADER month_number are correctly formatted at evaluation", async fu
     });
     await animationFrame();
     setCellContent(model, "B1", `=PIVOT.HEADER(1, "date:month_number", 1)`);
+    setCellContent(model, "B2", `=PIVOT.VALUE(1, "probability", "date:month_number", 4)`);
     expect(getEvaluatedCell(model, "B1").format).toBe("0");
     expect(getEvaluatedCell(model, "B1").value).toBe("January");
     expect(getEvaluatedCell(model, "B1").formattedValue).toBe("January");
+    expect(getEvaluatedCell(model, "B2").format).toBe("#,##0.00");
+    expect(getEvaluatedCell(model, "B2").value).toBe(10);
+    expect(getEvaluatedCell(model, "B2").formattedValue).toBe("10.00");
 });
 
-test("PIVOT.HEADER month are correctly formatted at evaluation", async function () {
+test("PIVOT month are correctly formatted at evaluation", async function () {
     const { model } = await createSpreadsheetWithPivot({
         arch: /* xml */ `
                 <pivot>
                     <field name="date" interval="month" type="col"/>
-                    <field name="foo" type="measure"/>
+                    <field name="probability" type="measure"/>
                 </pivot>`,
     });
     expect(getEvaluatedCell(model, "B1").format).toBe("mmmm yyyy");
     expect(getEvaluatedCell(model, "B1").value).toBe(42461);
     expect(getEvaluatedCell(model, "B1").formattedValue).toBe("April 2016");
+    expect(getEvaluatedCell(model, "B3").format).toBe("#,##0.00");
+    expect(getEvaluatedCell(model, "B3").value).toBe(10);
+    expect(getEvaluatedCell(model, "B3").formattedValue).toBe("10.00");
 });
 
-test("PIVOT.HEADER quarter_number are correctly formatted at evaluation", async function () {
+test("PIVOT quarter_number are correctly formatted at evaluation", async function () {
     const { model, pivotId } = await createSpreadsheetWithPivot({
         arch: /* xml */ `
                 <pivot>
                     <field name="date" interval="day" type="col"/>
-                    <field name="foo" type="measure"/>
+                    <field name="probability" type="measure"/>
                 </pivot>`,
     });
     updatePivot(model, pivotId, {
@@ -980,35 +1049,45 @@ test("PIVOT.HEADER quarter_number are correctly formatted at evaluation", async 
     });
     await animationFrame();
     setCellContent(model, "B1", `=PIVOT.HEADER(1, "date:quarter_number", 1)`);
+    setCellContent(model, "B2", `=PIVOT.VALUE(1, "probability", "date:quarter_number", 2)`);
     expect(getEvaluatedCell(model, "B1").format).toBe("0");
     expect(getEvaluatedCell(model, "B1").value).toBe("Q1");
     expect(getEvaluatedCell(model, "B1").formattedValue).toBe("Q1");
+    expect(getEvaluatedCell(model, "B2").format).toBe("#,##0.00");
+    expect(getEvaluatedCell(model, "B2").value).toBe(10);
+    expect(getEvaluatedCell(model, "B2").formattedValue).toBe("10.00");
 });
 
-test("PIVOT.HEADER quarter are correctly formatted at evaluation", async function () {
+test("PIVOT quarter are correctly formatted at evaluation", async function () {
     const { model } = await createSpreadsheetWithPivot({
         arch: /* xml */ `
                 <pivot>
                     <field name="date" interval="quarter" type="col"/>
-                    <field name="foo" type="measure"/>
+                    <field name="probability" type="measure"/>
                 </pivot>`,
     });
     expect(getEvaluatedCell(model, "B1").format).toBe(undefined);
     expect(getEvaluatedCell(model, "B1").value).toBe("Q2 2016");
     expect(getEvaluatedCell(model, "B1").formattedValue).toBe("Q2 2016");
+    expect(getEvaluatedCell(model, "B3").format).toBe("#,##0.00");
+    expect(getEvaluatedCell(model, "B3").value).toBe(10);
+    expect(getEvaluatedCell(model, "B3").formattedValue).toBe("10.00");
 });
 
-test("PIVOT.HEADER year are correctly formatted at evaluation", async function () {
+test("PIVOT year are correctly formatted at evaluation", async function () {
     const { model } = await createSpreadsheetWithPivot({
         arch: /* xml */ `
                 <pivot>
                     <field name="date" interval="year" type="col"/>
-                    <field name="foo" type="measure"/>
+                    <field name="probability" type="measure"/>
                 </pivot>`,
     });
     expect(getEvaluatedCell(model, "B1").format).toBe("0");
     expect(getEvaluatedCell(model, "B1").value).toBe(2016);
     expect(getEvaluatedCell(model, "B1").formattedValue).toBe("2016");
+    expect(getEvaluatedCell(model, "B3").format).toBe("#,##0.00");
+    expect(getEvaluatedCell(model, "B3").value).toBe(131);
+    expect(getEvaluatedCell(model, "B3").formattedValue).toBe("131.00");
 });
 
 test("PIVOT.HEADER formulas are correctly formatted at evaluation", async function () {

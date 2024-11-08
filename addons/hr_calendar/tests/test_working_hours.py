@@ -192,7 +192,8 @@ class TestWorkingHours(TestHrCalendarCommon):
             {'daysOfWeek': [4], 'startTime': '08:00', 'endTime': '12:00'},
             {'daysOfWeek': [4], 'startTime': '13:00', 'endTime': '22:00'},
             {'daysOfWeek': [5], 'startTime': '08:00', 'endTime': '12:00'},
-            {'daysOfWeek': [5], 'startTime': '13:00', 'endTime': '22:00'},
+            {'daysOfWeek': [5], 'startTime': '13:00', 'endTime': '21:00'},
+            {'daysOfWeek': [0], 'startTime': '15:00', 'endTime': '16:00'},
         ])
 
     def test_multi_companies_2_employees_1_partner_1_selected_companies(self):
@@ -232,5 +233,26 @@ class TestWorkingHours(TestHrCalendarCommon):
             {'daysOfWeek': [4], 'startTime': '08:00', 'endTime': '12:00'},
             {'daysOfWeek': [4], 'startTime': '13:00', 'endTime': '22:00'},
             {'daysOfWeek': [5], 'startTime': '08:00', 'endTime': '12:00'},
-            {'daysOfWeek': [5], 'startTime': '13:00', 'endTime': '22:00'},
+            {'daysOfWeek': [5], 'startTime': '13:00', 'endTime': '21:00'},
+            {'daysOfWeek': [0], 'startTime': '15:00', 'endTime': '16:00'},
+        ])
+
+    def test_work_hours_of_employee_without_time_zone(self):
+        self.env.user.tz = False
+        work_hours = self.env['res.partner'].get_working_hours_for_all_attendees(
+            [self.partnerA.id],
+            datetime(2023, 12, 25).isoformat(),
+            datetime(2023, 12, 31).isoformat(),
+        )
+        self.assertEqual(work_hours, [
+            {'daysOfWeek': [1], 'startTime': '07:00', 'endTime': '11:00'},
+            {'daysOfWeek': [1], 'startTime': '12:00', 'endTime': '15:00'},
+            {'daysOfWeek': [2], 'startTime': '07:00', 'endTime': '11:00'},
+            {'daysOfWeek': [2], 'startTime': '12:00', 'endTime': '15:00'},
+            {'daysOfWeek': [3], 'startTime': '07:00', 'endTime': '11:00'},
+            {'daysOfWeek': [3], 'startTime': '12:00', 'endTime': '15:00'},
+            {'daysOfWeek': [4], 'startTime': '07:00', 'endTime': '11:00'},
+            {'daysOfWeek': [4], 'startTime': '12:00', 'endTime': '15:00'},
+            {'daysOfWeek': [5], 'startTime': '07:00', 'endTime': '11:00'},
+            {'daysOfWeek': [5], 'startTime': '12:00', 'endTime': '15:00'},
         ])

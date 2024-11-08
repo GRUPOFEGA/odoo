@@ -247,6 +247,10 @@ export class WysiwygAdapterComponent extends Wysiwyg {
                 // Offcanvas attributes to ignore.
                 const offcanvasClasses = ["show"];
                 const offcanvasAttributes = ["aria-modal", "aria-hidden", "role", "style"];
+                // Carousel attributes to ignore.
+                const carouselSlidingClasses = ["carousel-item-start", "carousel-item-end",
+                    "carousel-item-next", "carousel-item-prev", "active", "o_carousel_sliding"];
+                const carouselIndicatorAttributes = ["aria-current"];
 
                 return filteredRecords.filter(record => {
                     if (record.type === "attributes") {
@@ -273,6 +277,19 @@ export class WysiwygAdapterComponent extends Wysiwyg {
                                 }
                             } else if (record.target.matches(".offcanvas")
                                     && offcanvasAttributes.includes(record.attributeName)) {
+                                return false;
+                            }
+                        }
+
+                        // Do not record some carousel attributes changes.
+                        if (record.target.closest(":not(section) > .carousel")) {
+                            if (record.target.matches(".carousel, .carousel-item, .carousel-indicators > li")
+                                    && record.attributeName === "class") {
+                                if (checkForExcludedClasses(record, carouselSlidingClasses)) {
+                                    return false;
+                                }
+                            } else if (record.target.matches(".carousel-indicators > li")
+                                    && carouselIndicatorAttributes.includes(record.attributeName)) {
                                 return false;
                             }
                         }
@@ -370,7 +387,8 @@ export class WysiwygAdapterComponent extends Wysiwyg {
      * @returns {HTMLElement}
      */
     get editable() {
-        return this.websiteService.pageDocument.getElementById('wrapwrap');
+        // Page document might become unavailable when leaving the page.
+        return this.websiteService.pageDocument?.getElementById('wrapwrap');
     }
     /**
      * @see {editable} jQuery wrapped editable.
@@ -436,7 +454,8 @@ export class WysiwygAdapterComponent extends Wysiwyg {
         const formOptionsMod = await odoo.loader.modules.get('@website/snippets/s_website_form/options')[Symbol.for('default')];
         formOptionsMod.clearAllFormsInfo();
 
-        this.$editable[0].removeEventListener("click", this.__onPageClick, { capture: true });
+        // Editable might become unavailable when leaving the page.
+        this.editable?.removeEventListener("click", this.__onPageClick, { capture: true });
         return super.destroy(...arguments);
     }
 
@@ -485,7 +504,6 @@ export class WysiwygAdapterComponent extends Wysiwyg {
             powerboxCommands: powerboxItems[0],
             powerboxCategories: powerboxItems[1],
             bindLinkTool: true,
-            showEmptyElementHint: false,
             getReadOnlyAreas: this._getReadOnlyAreas.bind(this),
             getUnremovableElements: this._getUnremovableElements.bind(this),
             direction: this.websiteService.currentWebsite.metadata.direction,
@@ -928,6 +946,7 @@ export class WysiwygAdapterComponent extends Wysiwyg {
      * @returns {Promise}
      */
     async _saveViewBlocks() {
+        this._restoreCarousels();
         await super._saveViewBlocks(...arguments);
         if (this.isDirty()) {
             return this._restoreMegaMenus();
@@ -977,7 +996,7 @@ export class WysiwygAdapterComponent extends Wysiwyg {
             }
             const modelName = await this.websiteService.getUserModelName(resModel);
             const recordNameEl = imageEl.closest("body").querySelector(`[data-oe-model="${resModel}"][data-oe-id="${resID}"][data-oe-field="name"]`);
-            const recordName = recordNameEl ? `'${recordNameEl.textContent}'` : resID;
+            const recordName = recordNameEl ? `'${recordNameEl.textContent.replaceAll("/", "")}'` : resID;
             const attachment = await rpc(
                 '/web_editor/attachment/add_data',
                 {
@@ -1090,6 +1109,27 @@ export class WysiwygAdapterComponent extends Wysiwyg {
         });
     }
     /**
+     * Restores all the carousels so their first slide is the active one.
+     *
+     * @private
+     */
+    _restoreCarousels() {
+        this.$editable[0].querySelectorAll(".carousel").forEach(carouselEl => {
+            // Set the first slide as the active one.
+            carouselEl.querySelectorAll(".carousel-item").forEach((itemEl, i) => {
+                itemEl.classList.remove("next", "prev", "left", "right");
+                itemEl.classList.toggle("active", i === 0);
+            });
+            carouselEl.querySelectorAll(".carousel-indicators li[data-bs-slide-to]").forEach((indicatorEl, i) => {
+                indicatorEl.classList.toggle("active", i === 0);
+                indicatorEl.removeAttribute("aria-current");
+                if (i === 0) {
+                    indicatorEl.setAttribute("aria-current", "true");
+                }
+            });
+        });
+    }
+    /**
      * @override
      */
     _getRecordInfo(editable) {
@@ -1147,7 +1187,8 @@ export class WysiwygAdapterComponent extends Wysiwyg {
             if (
                 isDirty &&
                 (!canPublish ||
-                    (canPublish && this.websiteService.currentWebsite.metadata.isPublished))
+                    (canPublish && this.websiteService.currentWebsite.metadata.isPublished)) &&
+                this.websiteService.currentWebsite.metadata.canOptimizeSeo
             ) {
                 const {
                     mainObject: { id, model },

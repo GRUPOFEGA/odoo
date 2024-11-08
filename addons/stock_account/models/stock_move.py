@@ -138,7 +138,8 @@ class StockMove(models.Model):
         :rtype: bool
         """
         self.ensure_one()
-        return self.location_id.usage == 'supplier' and self.location_dest_id.usage == 'customer'
+        return (self.location_id.usage == 'supplier' or (self.location_id.usage == 'transit' and not self.location_id.company_id)) \
+           and (self.location_dest_id.usage == 'customer' or (self.location_dest_id.usage == 'transit' and not self.location_dest_id.company_id))
 
     def _is_dropshipped_returned(self):
         """Check if the move should be considered as a returned dropshipping move so that the cost
@@ -148,7 +149,8 @@ class StockMove(models.Model):
         :rtype: bool
         """
         self.ensure_one()
-        return self.location_id.usage == 'customer' and self.location_dest_id.usage == 'supplier'
+        return (self.location_id.usage == 'customer' or (self.location_id.usage == 'transit' and not self.location_id.company_id)) \
+           and (self.location_dest_id.usage == 'supplier' or (self.location_dest_id.usage == 'transit' and not self.location_dest_id.company_id))
 
     def _prepare_common_svl_vals(self):
         """When a `stock.valuation.layer` is created from a `stock.move`, we can prepare a dict of
@@ -180,6 +182,10 @@ class StockMove(models.Model):
         :param forced_quantity: under some circunstances, the quantity to value is different than
             the initial demand of the move (Default value = None)
         """
+        svl_vals_list = self._get_out_svl_vals(forced_quantity)
+        return self.env['stock.valuation.layer'].sudo().create(svl_vals_list)
+
+    def _get_out_svl_vals(self, forced_quantity):
         svl_vals_list = []
         for move in self:
             move = move.with_company(move.company_id)
@@ -195,7 +201,7 @@ class StockMove(models.Model):
                 svl_vals['description'] = 'Correction of %s (modification of past move)' % (move.picking_id.name or move.name)
             svl_vals['description'] += svl_vals.pop('rounding_adjustment', '')
             svl_vals_list.append(svl_vals)
-        return self.env['stock.valuation.layer'].sudo().create(svl_vals_list)
+        return svl_vals_list
 
     def _create_dropshipped_svl(self, forced_quantity=None):
         """Create a `stock.valuation.layer` from `self`.
@@ -203,6 +209,10 @@ class StockMove(models.Model):
         :param forced_quantity: under some circunstances, the quantity to value is different than
             the initial demand of the move (Default value = None)
         """
+        svl_vals_list = self._get_dropshipped_svl_vals(forced_quantity)
+        return self.env['stock.valuation.layer'].sudo().create(svl_vals_list)
+
+    def _get_dropshipped_svl_vals(self, forced_quantity):
         svl_vals_list = []
         for move in self:
             move = move.with_company(move.company_id)
@@ -238,7 +248,7 @@ class StockMove(models.Model):
                 out_vals.update(common_vals)
                 svl_vals_list.append(out_vals)
 
-        return self.env['stock.valuation.layer'].sudo().create(svl_vals_list)
+        return svl_vals_list
 
     def _create_dropshipped_returned_svl(self, forced_quantity=None):
         """Create a `stock.valuation.layer` from `self`.
@@ -290,8 +300,7 @@ class StockMove(models.Model):
         # For every in move, run the vacuum for the linked product.
         products_to_vacuum = valued_moves['in'].mapped('product_id')
         company = valued_moves['in'].mapped('company_id') and valued_moves['in'].mapped('company_id')[0] or self.env.company
-        for product_to_vacuum in products_to_vacuum:
-            product_to_vacuum._run_fifo_vacuum(company)
+        products_to_vacuum._run_fifo_vacuum(company)
 
         return res
 
@@ -542,7 +551,8 @@ class StockMove(models.Model):
             'stock_move_id': self.id,
             'stock_valuation_layer_ids': [(6, None, [svl_id])],
             'move_type': 'entry',
-            'is_storno': self.env.context.get('is_returned') and self.env.company.account_storno,
+            'is_storno': self.env.context.get('is_returned') and self.company_id.account_storno,
+            'company_id': self.company_id.id,
         }
 
     def _account_analytic_entry_move(self):

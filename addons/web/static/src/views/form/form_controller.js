@@ -37,9 +37,10 @@ import {
     onError,
     onMounted,
     onRendered,
+    onWillUnmount,
     status,
+    useComponent,
     useEffect,
-    useExternalListener,
     useRef,
     useState,
 } from "@odoo/owl";
@@ -110,6 +111,16 @@ export async function loadSubViews(fieldNodes, fields, context, resModel, viewSe
     }
 }
 
+export function useFormViewInDialog() {
+    const component = useComponent();
+    onMounted(() => {
+        component.env.bus.trigger("FORM-CONTROLLER:FORM-IN-DIALOG:ADD");
+    });
+
+    onWillUnmount(() => {
+        component.env.bus.trigger("FORM-CONTROLLER:FORM-IN-DIALOG:REMOVE");
+    });
+}
 // -----------------------------------------------------------------------------
 
 export class FormController extends Component {
@@ -168,6 +179,11 @@ export class FormController extends Component {
             this.display.controlPanel = false;
         }
 
+        this.formInDialog = 0;
+
+        useBus(this.env.bus, "FORM-CONTROLLER:FORM-IN-DIALOG:ADD", () => this.formInDialog++);
+        useBus(this.env.bus, "FORM-CONTROLLER:FORM-IN-DIALOG:REMOVE", () => this.formInDialog--);
+
         const beforeFirstLoad = async () => {
             await loadSubViews(
                 this.archInfo.fieldNodes,
@@ -207,6 +223,7 @@ export class FormController extends Component {
         onError((error) => {
             const suggestedCompany = error.cause?.data?.context?.suggested_company;
             if (error.cause?.data?.name === "odoo.exceptions.AccessError" && suggestedCompany) {
+                this.env.pushStateBeforeReload();
                 const activeCompanyIds = this.companyService.activeCompanyIds;
                 activeCompanyIds.push(suggestedCompany.id);
                 this.companyService.setCompanies(activeCompanyIds, true);
@@ -255,6 +272,7 @@ export class FormController extends Component {
 
         useSetupView({
             rootRef: this.rootRef,
+            beforeVisibilityChange: () => this.beforeVisibilityChange(),
             beforeLeave: () => this.beforeLeave(),
             beforeUnload: (ev) => this.beforeUnload(ev),
             getLocalState: () => {
@@ -305,11 +323,9 @@ export class FormController extends Component {
             );
         }
 
-        useExternalListener(document, "visibilitychange", () => {
-            if (document.visibilityState === "hidden") {
-                this.model.root.save();
-            }
-        });
+        if (this.env.inDialog) {
+            useFormViewInDialog();
+        }
     }
 
     get modelParams() {
@@ -415,6 +431,12 @@ export class FormController extends Component {
                 });
             }
             throw e;
+        }
+    }
+
+    beforeVisibilityChange() {
+        if (document.visibilityState === "hidden" && this.formInDialog === 0) {
+            return this.model.root.save();
         }
     }
 

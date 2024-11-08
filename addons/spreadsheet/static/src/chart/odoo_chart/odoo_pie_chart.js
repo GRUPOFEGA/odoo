@@ -6,7 +6,8 @@ import { OdooChart } from "./odoo_chart";
 
 const { chartRegistry } = spreadsheet.registries;
 
-const { getDefaultChartJsRuntime, chartFontColor, ColorGenerator } = spreadsheet.helpers;
+const { getDefaultChartJsRuntime, chartFontColor, ColorGenerator, formatTickValue } =
+    spreadsheet.helpers;
 
 chartRegistry.add("odoo_pie", {
     match: (type) => type === "odoo_pie",
@@ -39,13 +40,13 @@ function createOdooChartRuntime(chart, getters) {
 }
 
 function getPieConfiguration(chart, labels, locale) {
-    const fontColor = chartFontColor(chart.background);
-    const config = getDefaultChartJsRuntime(chart, labels, fontColor, { locale });
+    const color = chartFontColor(chart.background);
+    const config = getDefaultChartJsRuntime(chart, labels, color, { locale });
     config.type = chart.type.replace("odoo_", "");
     const legend = {
         ...config.options.legend,
         display: chart.legendPosition !== "none",
-        labels: { fontColor },
+        labels: { color },
     };
     legend.position = chart.legendPosition;
     config.options.plugins = config.options.plugins || {};
@@ -59,6 +60,11 @@ function getPieConfiguration(chart, labels, locale) {
                 return tooltipItem.label;
             },
         },
+    };
+
+    config.options.plugins.chartShowValuesPlugin = {
+        showValues: chart.showValues,
+        callback: formatTickValue({ locale }),
     };
     return config;
 }

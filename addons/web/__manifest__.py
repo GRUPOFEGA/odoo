@@ -132,12 +132,16 @@ This module provides the core of the Odoo Web Client.
         ],
         'web.assets_backend_lazy': [
             ('include', 'web._assets_helpers'),
+            ('include', 'web._assets_backend_helpers'),
             'web/static/src/scss/pre_variables.scss',
             'web/static/lib/bootstrap/scss/_variables.scss',
             'web/static/lib/bootstrap/scss/_variables-dark.scss',
             'web/static/lib/bootstrap/scss/_maps.scss',
 
             'web/static/src/views/graph/**',
+        ],
+        'web.assets_backend_lazy_dark': [
+            ('include', 'web.assets_backend_lazy'),
         ],
         'web.assets_web': [
             ('include', 'web.assets_backend'),
@@ -269,6 +273,8 @@ This module provides the core of the Odoo Web Client.
             'web/static/lib/bootstrap/scss/_maps.scss',
 
             ('include', 'web._assets_bootstrap_backend'),
+
+            ('after', 'web/static/src/scss/utilities_custom.scss', 'web/static/src/scss/utilities_custom_report.scss'),
 
             'web/static/lib/popper/popper.js',
             'web/static/lib/bootstrap/js/dist/util/index.js',
@@ -435,6 +441,7 @@ This module provides the core of the Odoo Web Client.
 
             'web/static/lib/hoot/**/*',
             'web/static/lib/hoot-dom/**/*',
+            ('remove', 'web/static/lib/hoot/ui/hoot_style.css'),
             ('remove', 'web/static/lib/hoot/tests/**/*'),
 
             # Odoo mocks
@@ -459,6 +466,9 @@ This module provides the core of the Odoo Web Client.
         'web.tests_assets': [
             ('include', 'web.assets_backend'),
             ('include', 'web.assets_backend_lazy'),
+
+            # This library is only included in the frontend bundle, but we don't want to include it completely
+            'web/static/src/legacy/js/core/minimal_dom.js',
 
             'web/static/src/public/public_component_service.js',
             'web/static/tests/legacy/patch_translations.js',

@@ -157,7 +157,6 @@
             </div>
             <Dropdown t-foreach="sections" t-as="section" t-key="section.id" state="getDropdownState(section.id)" menuClass="'my-2 mx-1'" onOpened.bind="updateGroupHeadersChecked">
                 <span class="btn btn-secondary my-2 mx-1 o-dropdown-caret">
-                    <i t-if="hasSelection(section.id)" class="fa fa-circle position-absolute top-0 start-100 translate-middle text-danger"/>
                     <i t-attf-class="fa {{ section.icon }} o_search_panel_section_icon {{!section.color &amp;&amp; section.type == 'filter' ? 'text-warning' : !section.color ? 'text-primary': ''}} me-2"
                         t-att-style="section.color and ('color: ' + section.color)"
                     />
@@ -193,6 +192,7 @@
                 <div
                     class="o_search_panel_label d-flex align-items-center overflow-hidden w-100 cursor-pointer mb-0"
                     t-att-class="{'o_with_counters': section.enableCounters }"
+                    t-att-data-tooltip="value.display_name"
                     >
                     <button class="o_toggle_fold btn p-0 px-1 flex-shrink-0 text-center">
                         <i
@@ -208,7 +208,6 @@
                         class="o_search_panel_label_title text-truncate"
                         t-att-class="{'fw-bold' : value.bold}"
                         t-esc="value.display_name"
-                        t-att-data-tooltip="value.display_name"
                         />
                 </div>
                 <small t-if="section.enableCounters and value.__count gt 0"

@@ -14,6 +14,7 @@ import { LinkPopoverWidget } from '@web_editor/js/wysiwyg/widgets/link_popover_w
 import { AltDialog } from '@web_editor/js/wysiwyg/widgets/alt_dialog';
 import { ChatGPTPromptDialog } from '@web_editor/js/wysiwyg/widgets/chatgpt_prompt_dialog';
 import { ChatGPTAlternativesDialog } from '@web_editor/js/wysiwyg/widgets/chatgpt_alternatives_dialog';
+import { ChatGPTTranslateDialog } from "@web_editor/js/wysiwyg/widgets/chatgpt_translate_dialog";
 import { ImageCrop } from '@web_editor/js/wysiwyg/widgets/image_crop';
 
 import * as wysiwygUtils from "@web_editor/js/common/wysiwyg_utils";
@@ -66,6 +67,8 @@ const getRangePosition = OdooEditorLib.getRangePosition;
 const childNodeIndex = OdooEditorLib.childNodeIndex;
 const fillEmpty = OdooEditorLib.fillEmpty;
 const isVisible = OdooEditorLib.isVisible;
+const getDeepestPosition = OdooEditorLib.getDeepestPosition;
+const paragraphRelatedElements = OdooEditorLib.paragraphRelatedElements;
 
 function getJqueryFromDocument(doc) {
     if (doc.defaultView && doc.defaultView.$) {
@@ -186,6 +189,7 @@ export class Wysiwyg extends Component {
                 this.odooEditor.historyPauseSteps();
                 try {
                     this._processAndApplyColor(colorType, props.color, true);
+                    this.odooEditor._computeHistorySelection();
                 } finally {
                     this.odooEditor.historyUnpauseSteps();
                 }
@@ -448,8 +452,14 @@ export class Wysiwyg extends Component {
             getPowerboxElement: () => {
                 const selection = (this.options.document || document).getSelection();
                 if (selection.isCollapsed && selection.rangeCount) {
-                    const baseNode = closestElement(selection.anchorNode, 'P:not([t-field]), DIV:not([t-field]):not(.o_not_editable)');
-                    const fieldContainer = closestElement(selection.anchorNode, '[data-oe-field]');
+                    const [deepestNode] = getDeepestPosition(selection.anchorNode, selection.anchorOffset);
+                    const elementSelectors = [
+                        'LI:not([t-field])',
+                        'DIV:not([t-field]):not(.o_not_editable)',
+                        ...paragraphRelatedElements.map(tag => `${tag}:not([t-field])`),
+                    ];
+                    const baseNode = closestElement(deepestNode, elementSelectors.join(', '));
+                    const fieldContainer = closestElement(deepestNode, '[data-oe-field]');
                     if (!baseNode ||
                         (
                             fieldContainer &&
@@ -493,6 +503,7 @@ export class Wysiwyg extends Component {
             preHistoryUndo: () => {
                 this.destroyLinkTools();
             },
+            beforeAnyCommand: this._beforeAnyCommand.bind(this),
             commands: powerboxOptions.commands,
             categories: powerboxOptions.categories,
             plugins: options.editorPlugins,
@@ -506,6 +517,7 @@ export class Wysiwyg extends Component {
             showExtendedTextStylesOptions: options.showExtendedTextStylesOptions,
             getCSSVariableValue: options.getCSSVariableValue,
             convertNumericToUnit: options.convertNumericToUnit,
+            autoActivateContentEditable: this.options.autoActivateContentEditable,
         }, editorCollaborationOptions));
 
         this.odooEditor.addEventListener('contentChanged', function () {
@@ -1305,6 +1317,15 @@ export class Wysiwyg extends Component {
                             .filter('[data-oe-field="name"]'));
                     }
 
+                    // TODO adapt in master: remove this and only use the
+                    //  `_pauseOdooFieldObservers(field)` call.
+                    this.__odooFieldObserversToPause = this.odooFieldObservers.filter(
+                        // Exclude inner translation fields observers. They
+                        // still handle translation synchronization inside the
+                        // targeted field.
+                        observerData => !observerData.field.dataset.oeTranslationSourceSha ||
+                            !field.contains(observerData.field)
+                    );
                     this._pauseOdooFieldObservers();
                     // Tag the date fields to only replace the value
                     // with the original date value once (see mouseDown event)
@@ -1346,7 +1367,11 @@ export class Wysiwyg extends Component {
      * Stop the field changes mutation observers.
      */
     _pauseOdooFieldObservers() {
-        for (let observerData of this.odooFieldObservers) {
+        // TODO adapt in master: remove this and directly exclude observers with
+        // targets inside the current field (we use `this.odooFieldObservers`
+        // as fallback for compatibility here).
+        const fieldObserversData = this.__odooFieldObserversToPause || this.odooFieldObservers;
+        for (let observerData of fieldObserversData) {
             observerData.observer.disconnect();
         }
     }
@@ -1482,7 +1507,7 @@ export class Wysiwyg extends Component {
                 ...this.options.linkOptions,
                 editable: this.odooEditor.editable,
                 link,
-                needLabel: true,
+                needLabel: true && !link.querySelector('img'),
                 focusField: link.innerHTML ? 'url' : '',
                 onSave: (data) => {
                     if (!data) {
@@ -1509,9 +1534,11 @@ export class Wysiwyg extends Component {
     /**
      * Open one of the ChatGPTDialogs to generate or modify content.
      *
-     * @param {'prompt'|'alternatives'} [mode='prompt']
+     * @param {'prompt'|'alternatives'|'translate'} [mode='prompt']
+     * @param {object} options
+     * @param {String} [options.language]
      */
-    openChatGPTDialog(mode = 'prompt') {
+    openChatGPTDialog(mode = 'prompt', options={}) {
         const restore = preserveCursor(this.odooEditor.document);
         const params = {
             insert: content => {
@@ -1552,12 +1579,15 @@ export class Wysiwyg extends Component {
                 }
             },
         };
-        if (mode === 'alternatives') {
+        if (mode === 'alternatives' || mode === 'translate') {
             params.originalText = this.odooEditor.document.getSelection().toString() || '';
+        }
+        if (mode === 'translate') {
+            params.language = options.language;
         }
         this.odooEditor.document.getSelection().collapseToEnd();
         this.env.services.dialog.add(
-            mode === 'prompt' ? ChatGPTPromptDialog : ChatGPTAlternativesDialog,
+            mode === 'prompt' ? ChatGPTPromptDialog : mode === 'translate' ? ChatGPTTranslateDialog : ChatGPTAlternativesDialog,
             params,
             { onClose: restore },
         );
@@ -1694,15 +1724,9 @@ export class Wysiwyg extends Component {
             }, {
                 onPositioned: (popover) => {
                     restoreSelection();
-                    // Set the 'parentContextRect' option in 'options' when
-                    // 'getContextFromParentRect' is available. This facilitates
-                    // element positioning relative to a parent or reference
-                    // rectangle.
-                    const options = {};
-                    if (this.options.getContextFromParentRect) {
-                        options['parentContextRect'] = this.options.getContextFromParentRect();
-                    }
-                    const rangePosition = getRangePosition(popover, this.options.document, options);
+                    const rangePosition = getRangePosition(popover, this.options.document, {
+                        getContextFromParentRect: this.options.getContextFromParentRect,
+                    });
                     popover.style.top = rangePosition.top + 'px';
                     popover.style.left = rangePosition.left + 'px';
                     const oInputBox = popover.querySelector('input');
@@ -1762,7 +1786,7 @@ export class Wysiwyg extends Component {
             this.odooEditor.unbreakableStepUnactive();
             this.odooEditor.historyStep();
             // Refocus again to save updates when calling `_onWysiwygBlur`
-            params.node.ownerDocument.defaultView.focus();
+            this.odooEditor.editable.focus();
         } else {
             return this.odooEditor.execCommand('insert', element);
         }
@@ -1904,10 +1928,17 @@ export class Wysiwyg extends Component {
                 return;
             }
             this.showImageFullscreen(this.lastMediaClicked.src);
-    })
+        });
         $toolbar.find('#media-insert, #media-replace, #media-description').click(openTools);
         $toolbar.find('#create-link').click(openTools);
         $toolbar.find('#open-chatgpt').click(openTools);
+        $toolbar.on('click', '#translate .lang', (e) => {
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            e.stopPropagation();
+            const language = e.target.dataset.value;
+            this.openChatGPTDialog('translate', { language });
+        });
         $toolbar.find('#image-shape div, #fa-spin').click(e => {
             if (!this.lastMediaClicked) {
                 return;
@@ -1955,8 +1986,6 @@ export class Wysiwyg extends Component {
         });
         $toolbar.find('#image-crop').click(() => this._showImageCrop());
         $toolbar.find('#image-transform').click(e => {
-            const sel = document.getSelection();
-            sel.removeAllRanges();
             if (!this.lastMediaClicked) {
                 return;
             }
@@ -2184,6 +2213,9 @@ export class Wysiwyg extends Component {
         if (isProtected(anchorNode)) {
             return;
         }
+        if (this.odooEditor.document.querySelector(".transfo-container")) {
+            return;
+        }
 
         this.odooEditor.automaticStepSkipStack();
         // We need to use the editor's window so the tooltip displays in its
@@ -2234,6 +2266,7 @@ export class Wysiwyg extends Component {
             '#colorInputButtonGroup',
             '#media-insert', // "Insert media" should be replaced with "Replace media".
             '#chatgpt', // Chatgpt should be removed when media is in selection.
+            '#translate' // Translate button should be removed when media is in selection.
         ].join(','))){
             el.classList.toggle('d-none', isInMedia);
         }
@@ -2378,7 +2411,7 @@ export class Wysiwyg extends Component {
                 const bannerElement = parseHTML(this.odooEditor.document, `
                     <div class="o_editor_banner o_not_editable lh-1 d-flex align-items-center alert alert-${alertClass} pb-0 pt-3" role="status" data-oe-protected="true">
                         <i class="o_editor_banner_icon mb-3 fst-normal" aria-label="${_t(title)}">${emoji}</i>
-                        <div class="w-100 ms-3" data-oe-protected="false">
+                        <div class="w-100 px-3" data-oe-protected="false">
                             <p><br></p>
                         </div>
                     </div>
@@ -3575,6 +3608,23 @@ export class Wysiwyg extends Component {
             el.setAttribute('src', newAttachmentSrc);
             // Also update carousel thumbnail.
             weUtils.forwardToThumbnail(el);
+        }
+    }
+
+    /**
+     * @private
+     */
+    _beforeAnyCommand() {
+        // Remove any marker of default text in the selection on which the
+        // command is being applied. Note that this needs to be done *before*
+        // the command and not after because some commands (e.g. font-size)
+        // rely on some elements not to have the class to fully work.
+        for (const node of OdooEditorLib.getTraversedNodes(this.$editable[0])) {
+            const el = node.nodeType === Node.TEXT_NODE ? node.parentElement : node;
+            const defaultTextEl = el.closest('.o_default_snippet_text');
+            if (defaultTextEl) {
+                defaultTextEl.classList.remove('o_default_snippet_text');
+            }
         }
     }
 

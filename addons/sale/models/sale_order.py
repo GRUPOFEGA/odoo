@@ -365,7 +365,9 @@ class SaleOrder(models.Model):
                 order.note = _('Terms & Conditions: %s', baseurl)
                 del context
             elif not is_html_empty(self.env.company.invoice_terms):
-                order.note = order.with_context(lang=order.partner_id.lang).env.company.invoice_terms
+                if order.partner_id.lang:
+                    order = order.with_context(lang=order.partner_id.lang)
+                order.note = order.env.company.invoice_terms
 
     @api.model
     def _get_note_url(self):
@@ -1004,6 +1006,9 @@ class SaleOrder(models.Model):
             # Public user can confirm SO, so we check the group on any record creator.
             self.action_lock()
 
+        if self.env.context.get('send_email'):
+            self._send_order_confirmation_mail()
+
         return True
 
     def _should_be_locked(self):
@@ -1218,7 +1223,7 @@ class SaleOrder(models.Model):
         """
         self.ensure_one()
 
-        txs_to_be_linked = self.transaction_ids.filtered(
+        txs_to_be_linked = self.transaction_ids.sudo().filtered(
             lambda tx: (
                 tx.state in ('pending', 'authorized')
                 or tx.state == 'done' and not (tx.payment_id and tx.payment_id.is_reconciled)
@@ -1324,6 +1329,12 @@ class SaleOrder(models.Model):
 
         return self.env['sale.order.line'].browse(invoiceable_line_ids + down_payment_line_ids)
 
+    def _create_account_invoices(self, invoice_vals_list, final):
+        """Small method to allow overriding the behavior right after an invoice is created."""
+        # Manage the creation of invoices in sudo because a salesperson must be able to generate an invoice from a
+        # sale order without "billing" access rights. However, he should not be able to create an invoice from scratch.
+        return self.env['account.move'].sudo().with_context(default_move_type='out_invoice').create(invoice_vals_list)
+
     def _create_invoices(self, grouped=False, final=False, date=None):
         """ Create invoice(s) for the given Sales Order(s).
 
@@ -1346,7 +1357,9 @@ class SaleOrder(models.Model):
         invoice_vals_list = []
         invoice_item_sequence = 0 # Incremental sequencing to keep the lines order on the invoice.
         for order in self:
-            order = order.with_company(order.company_id).with_context(lang=order.partner_invoice_id.lang)
+            if order.partner_invoice_id.lang:
+                order = order.with_context(lang=order.partner_invoice_id.lang)
+            order = order.with_company(order.company_id)
 
             invoice_vals = order._prepare_invoice()
             invoiceable_lines = order._get_invoiceable_lines(final)
@@ -1439,9 +1452,7 @@ class SaleOrder(models.Model):
                     line[2]['sequence'] = SaleOrderLine._get_invoice_line_sequence(new=sequence, old=line[2]['sequence'])
                     sequence += 1
 
-        # Manage the creation of invoices in sudo because a salesperson must be able to generate an invoice from a
-        # sale order without "billing" access rights. However, he should not be able to create an invoice from scratch.
-        moves = self.env['account.move'].sudo().with_context(default_move_type='out_invoice').create(invoice_vals_list)
+        moves = self._create_account_invoices(invoice_vals_list, final)
 
         # 4) Some moves might actually be refunds: convert them if the total amount is negative
         # We do this after the moves have been created since we need taxes, etc. to know if the total
@@ -1736,6 +1747,7 @@ class SaleOrder(models.Model):
         - it requires a payment;
         - the last transaction's state isn't `done`;
         - the total amount is strictly positive.
+        - confirmation amount is not reached
 
         Note: self.ensure_one()
 
@@ -1743,13 +1755,12 @@ class SaleOrder(models.Model):
         :rtype: bool
         """
         self.ensure_one()
-        transaction = self.get_portal_last_transaction()
         return (
             self.state in ['draft', 'sent']
             and not self.is_expired
             and self.require_payment
-            and transaction.state != 'done'
             and self.amount_total > 0
+            and not self._is_confirmation_amount_reached()
         )
 
     def _get_portal_return_action(self):

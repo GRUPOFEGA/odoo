@@ -12,7 +12,7 @@ from odoo import _, api, Command, fields, models, tools
 from odoo.addons.base.models.res_partner import _tz_get
 from odoo.exceptions import UserError, ValidationError
 from odoo.osv import expression
-from odoo.tools import format_date, format_datetime, frozendict
+from odoo.tools import format_date, format_datetime, format_time, frozendict
 from odoo.tools.mail import is_html_empty, html_to_inner_content
 from odoo.tools.misc import formatLang
 from odoo.tools.translate import html_translate
@@ -236,7 +236,9 @@ class EventEvent(models.Model):
         selection=[
             ('A4_french_fold', 'A4 foldable'),
             ('A6', 'A6'),
-            ('four_per_sheet', '4 per sheet')
+            ('four_per_sheet', '4 per sheet'),
+            ('96x82', '96x82mm (Badge Printer)'),
+            ('96x134', '96x134mm (Badge Printer)')
         ], default='A6', required=True)
     badge_image = fields.Image('Badge Background', max_width=1024, max_height=1024)
     ticket_instructions = fields.Html('Ticket Instructions', translate=True,
@@ -705,9 +707,9 @@ class EventEvent(models.Model):
 
     def _get_date_range_str(self, lang_code=False):
         self.ensure_one()
-        today = fields.Datetime.now()
-        event_date = self.date_begin
-        diff = (event_date.date() - today.date())
+        today_tz = pytz.utc.localize(fields.Datetime.now()).astimezone(pytz.timezone(self.date_tz))
+        event_date_tz = pytz.utc.localize(self.date_begin).astimezone(pytz.timezone(self.date_tz))
+        diff = (event_date_tz.date() - today_tz.date())
         if diff.days <= 0:
             return _('today')
         if diff.days == 1:
@@ -716,7 +718,7 @@ class EventEvent(models.Model):
             return _('in %d days', diff.days)
         if (diff.days < 14):
             return _('next week')
-        if event_date.month == (today + relativedelta(months=+1)).month:
+        if event_date_tz.month == (today_tz + relativedelta(months=+1)).month:
             return _('next month')
         return _('on %(date)s', date=format_date(self.env, self.date_begin, lang_code=lang_code, date_format='medium'))
 
@@ -771,3 +773,27 @@ class EventEvent(models.Model):
         ])
         if ended_events:
             ended_events.action_set_done()
+
+    def _get_event_timeframe_string(self):
+        self.ensure_one()
+        start_datetime = format_datetime(self.env, self.date_begin, self.date_tz, "short")
+        if self.is_one_day:
+            end_datetime = format_time(self.env, self.date_end, self.date_tz, "short")
+        else:
+            end_datetime = format_datetime(self.env, self.date_end, self.date_tz, "short")
+        return _("%(start_date)s to %(end_date)s", start_date=start_datetime, end_date=end_datetime)
+
+    def _get_event_print_details(self):
+        self.ensure_one()
+        return {
+            'name': self.name,
+            'badge_image': self.badge_image,
+            'timeframe': self._get_event_timeframe_string(),
+            'address': self.address_id.name if self.address_id else None,
+            'logo': self.company_id.logo,
+            'sponsor_text': self._get_printing_sponsor_text()
+        }
+
+    def _get_printing_sponsor_text(self):
+        sponsor_text = self.env['ir.config_parameter'].sudo().get_param('event.badge_printing_sponsor_text')
+        return sponsor_text or "Powered by Odoo"

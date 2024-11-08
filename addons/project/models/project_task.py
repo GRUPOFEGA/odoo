@@ -224,7 +224,7 @@ class Task(models.Model):
     child_ids = fields.One2many('project.task', 'parent_id', string="Sub-tasks", domain="[('recurring_task', '=', False)]", export_string_translation=False)
     subtask_count = fields.Integer("Sub-task Count", compute='_compute_subtask_count', export_string_translation=False)
     closed_subtask_count = fields.Integer("Closed Sub-tasks Count", compute='_compute_subtask_count', export_string_translation=False)
-    project_privacy_visibility = fields.Selection(related='project_id.privacy_visibility', string="Project Visibility")
+    project_privacy_visibility = fields.Selection(related='project_id.privacy_visibility', string="Project Visibility", tracking=False)
     subtask_completion_percentage = fields.Float(compute="_compute_subtask_completion_percentage", export_string_translation=False)
     # Computed field about working time elapsed between record creation and assignation/closing.
     working_hours_open = fields.Float(compute='_compute_elapsed', string='Working Hours to Assign', digits=(16, 2), store=True, aggregator="avg")
@@ -946,6 +946,8 @@ class Task(models.Model):
             project = self.env['project.project'].browse(project_id)
             if project.analytic_account_id:
                 vals['analytic_account_id'] = project.analytic_account_id.id
+            if 'company_id' in default_fields and 'default_project_id' not in self.env.context:
+                vals['company_id'] = project.sudo().company_id
         elif 'default_user_ids' not in self.env.context and 'user_ids' in default_fields:
             user_ids = vals.get('user_ids', [])
             user_ids.append(Command.link(self.env.user.id))
@@ -1321,7 +1323,15 @@ class Task(models.Model):
         return {'date_end': False}
 
     def _search_on_comodel(self, domain, field, comodel, additional_domain=None):
+        """ This method is called by `group_expand` methods, whose purpose is to add empty groups to the `read_group`
+            (which otherwise returns groups containing records that match the domain).
+            When specifically filtering on a comodel's field, the result of the `read_group` should contain all matching groups.
+            However, if the search isn't filtered on any comodel's field, the result shouldn't be affected,
+            which explains why we return `False` if `filtered_domain` is empty.
 
+            Returns:
+                False or recordset of the comodel given in parameter.
+        """
         def _change_operator(domain):
             new_domain = []
             for dom in domain:
@@ -1352,9 +1362,11 @@ class Task(models.Model):
             f"{field}.name": "name",
         })
         filtered_domain = _change_operator(filtered_domain)
+        if not filtered_domain:
+            return self.env[comodel]
         if additional_domain:
             filtered_domain = expression.AND([filtered_domain, additional_domain])
-        return self.env[comodel].search(filtered_domain) if filtered_domain else False
+        return self.env[comodel].search(filtered_domain)
 
     # ---------------------------------------------------
     # Subtasks
@@ -1668,7 +1680,12 @@ class Task(models.Model):
                 self.displayed_image_id = image_attachments[0]
 
         # use the sanitized body of the email from the message thread to populate the task's description
-        if not self.description and message.subtype_id == self._creation_subtype() and self.partner_id == message.author_id:
+        if (
+           not self.description
+           and message.subtype_id == self._creation_subtype()
+           and self.partner_id == message.author_id
+           and msg_vals['message_type'] == 'email'
+        ):
             self.description = message.body
         return super(Task, self)._message_post_after_hook(message, msg_vals)
 

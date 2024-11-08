@@ -18,17 +18,15 @@ export class DiscussCoreCommon {
     }
 
     setup() {
-        this.busService.subscribe("discuss.channel/joined", async (payload) => {
-            const { channel, invited_by_user_id: invitedByUserId } = payload;
-            const thread = this.store.Thread.insert(channel);
-            await thread.fetchChannelInfo();
-            if (invitedByUserId && invitedByUserId !== this.store.self.userId) {
-                this.notificationService.add(
-                    _t("You have been invited to #%s", thread.displayName),
-                    { type: "info" }
-                );
-            }
-        });
+        this.busService.addEventListener(
+            "connect",
+            () =>
+                this.store.imStatusTrackedPersonas.forEach((p) => {
+                    const model = p.type === "partner" ? "res.partner" : "mail.guest";
+                    this.busService.addChannel(`odoo-presence-${model}_${p.id}`);
+                }),
+            { once: true }
+        );
         this.busService.subscribe("discuss.channel/leave", (payload) => {
             const { Thread } = this.store.insert(payload);
             const [thread] = Thread;

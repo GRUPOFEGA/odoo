@@ -27,13 +27,15 @@ class Home(web_home.Home):
 
         user = request.env['res.users'].browse(request.session.pre_uid)
         if user and request.httprequest.method == 'GET':
-            cookies = request.httprequest.cookies
+            cookies = request.cookies
             key = cookies.get(TRUSTED_DEVICE_COOKIE)
             if key:
                 user_match = request.env['auth_totp.device']._check_credentials_for_uid(
                     scope="browser", key=key, uid=user.id)
                 if user_match:
                     request.session.finalize(request.env)
+                    request.update_env(user=request.session.uid)
+                    request.update_context(**request.session.context)
                     return request.redirect(self._login_redirect(request.session.uid, redirect=redirect))
 
         elif user and request.httprequest.method == 'POST' and kwargs.get('totp_token'):

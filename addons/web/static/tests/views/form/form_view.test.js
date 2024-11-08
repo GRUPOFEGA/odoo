@@ -465,7 +465,7 @@ test(`duplicate fields rendered properly (one2many)`, async () => {
         "hello",
         { confirm: false }
     );
-    click(`.o_content`); // confirm change by focusing out the input.
+    await click(`.o_content`); // confirm change by focusing out the input.
     await animationFrame();
     await animationFrame();
     await animationFrame();
@@ -848,6 +848,43 @@ test(`group containing both a field and a group`, async () => {
     expect(`.o_group .o_field_widget[name=foo]`).toHaveCount(1);
     expect(`.o_group .o_inner_group .o_field_widget[name=int_field]`).toHaveCount(1);
     expect(`.o_field_widget[name=foo]`).toHaveClass(["o_field_char", "col-lg-6"]);
+});
+
+test(`field ids are unique (same field name in 2 form views)`, async () => {
+    await mountView({
+        resModel: "partner",
+        type: "form",
+        arch: `
+            <form>
+                <sheet>
+                    <group>
+                        <field name="foo"/>
+                    </group>
+                    <field name="child_ids">
+                        <form>
+                            <sheet>
+                                <group>
+                                    <field name="bar"/>
+                                    <field name="foo"/>
+                                </group>
+                            </sheet>
+                        </form>
+                        <tree>
+                            <field name="foo"/>
+                        </tree>
+                    </field>
+                </sheet>
+            </form>`,
+        resId: 1,
+    });
+
+    expect(".o_field_widget input#foo_0").toHaveCount(1);
+
+    await contains(".o_field_x2many_list_row_add a").click();
+    expect(".modal .o_form_view").toHaveCount(1);
+    expect(".o_field_widget input#foo_0").toHaveCount(1);
+    expect(".modal .o_field_widget input#foo_0").toHaveCount(1);
+    expect(".modal .o_field_widget input#bar_0").toHaveCount(1);
 });
 
 test(`Form and subview with _view_ref contexts`, async () => {
@@ -2358,22 +2395,22 @@ test.tags("desktop")(`tooltips on multiple occurrences of fields and labels`, as
             </form>
         `,
     });
-    hover(".o_form_label[for=foo_0] sup");
+    await hover(".o_form_label[for=foo_0] sup");
     await runAllTimers();
     await animationFrame();
     expect(".o-tooltip .o-tooltip--help").toHaveText("foo tooltip");
 
-    hover(".o_form_label[for=bar_0] sup");
+    await hover(".o_form_label[for=bar_0] sup");
     await runAllTimers();
     await animationFrame();
     expect(".o-tooltip .o-tooltip--help").toHaveText("bar tooltip");
 
-    hover(".o_form_label[for=foo_1] sup");
+    await hover(".o_form_label[for=foo_1] sup");
     await runAllTimers();
     await animationFrame();
     expect(".o-tooltip .o-tooltip--help").toHaveText("foo tooltip");
 
-    hover(".o_form_label[for=bar_1] sup");
+    await hover(".o_form_label[for=bar_1] sup");
     await runAllTimers();
     await animationFrame();
     expect(".o-tooltip .o-tooltip--help").toHaveText("bar tooltip");
@@ -2464,8 +2501,8 @@ test.tags("desktop")(`readonly attrs on lines are re-evaluated on field change 2
     await contains(`.dropdown .dropdown-item:contains(first record)`).click();
     expect(`.o_field_one2many[name="product_ids"]`).not.toHaveClass("o_readonly_modifier");
 
-    clear();
-    click(`.o_content`); // blur input to trigger change
+    await clear();
+    await click(`.o_content`); // blur input to trigger change
     await animationFrame();
     expect(`.o_field_one2many[name="product_ids"]`).toHaveClass("o_readonly_modifier");
 
@@ -2473,8 +2510,8 @@ test.tags("desktop")(`readonly attrs on lines are re-evaluated on field change 2
     await contains(`.dropdown .dropdown-item:contains(second record)`).click();
     expect(`.o_field_one2many[name="product_ids"]`).not.toHaveClass("o_readonly_modifier");
 
-    clear();
-    click(`.o_content`); // blur input to trigger change
+    await clear();
+    await click(`.o_content`); // blur input to trigger change
     await animationFrame();
     expect(`.o_field_one2many[name="product_ids"]`).toHaveClass("o_readonly_modifier");
 });
@@ -3147,7 +3184,7 @@ test(`buttons with data-hotkey attribute`, async () => {
     });
     expect(`.o_form_view button[data-hotkey=v]`).toHaveCount(1);
 
-    press(["alt", "v"]);
+    await press(["alt", "v"]);
     await animationFrame();
     expect.verifySteps(["validate"]);
 });
@@ -3355,6 +3392,67 @@ test(`onchange only send present fields value`, async () => {
     // trigger an onchange by modifying foo
     checkOnchange = true;
     await contains(`.o_field_widget[name=foo] input`).edit("tralala");
+    expect.verifySteps(["onchange"]);
+});
+
+test(`onchange send relation parent field values (including readonly)`, async () => {
+    ResUsers._fields.login = fields.Char();
+    ResUsers._onChanges = {
+        name: (obj) => {
+            // like computed field that depends on "name" field
+            obj.login = obj.name.toLowerCase() + "@example.org";
+        },
+    };
+    Partner._onChanges = {
+        float_field: () => {},
+    };
+
+    let checkOnchange = false;
+    onRpc("onchange", ({ args, kwargs }) => {
+        if (!checkOnchange) {
+            return;
+        }
+        expect(args[1]).toEqual({
+            float_field: 12.4,
+            user_id: {
+                id: 17,
+                name: "Test",
+                login: "test@example.org",
+                partner_ids: [[0, args[1].user_id.partner_ids[0][1], { float_field: 0 }]],
+            },
+        });
+        expect.step("onchange");
+    });
+
+    await mountView({
+        resModel: "res.users",
+        type: "form",
+        arch: `
+            <form>
+                <field name="name"/>
+                <field name="login" readonly="True"/>
+                <field name="partner_ids">
+                    <tree editable="top">
+                        <field name="float_field"/>
+                    </tree>
+                </field>
+            </form>
+        `,
+        resId: 17,
+    });
+
+    // trigger an onchange that update a readonly field by modifying user name
+    await contains(`.o_field_widget[name=name] input`).edit("Test");
+
+    // add a o2m row
+    await contains(`.o_field_x2many_list_row_add a`).click();
+    expect.verifySteps([]);
+
+    // trigger an onchange by modifying float_field
+    checkOnchange = true;
+    await contains(`.o_field_one2many .o_field_widget[name=float_field] input`).edit("12.4", {
+        confirm: "tab",
+    });
     expect.verifySteps(["onchange"]);
 });
 
@@ -4386,6 +4484,126 @@ test.tags("desktop")(`discard changes on relational data on new record`, async (
     expect(`.o_data_row`).toHaveCount(0);
 });
 
+test("discard changes on relational data on existing record", async () => {
+    Partner._records[0].product_ids = [37];
+    Partner._records[0].bar = false;
+    Partner._onChanges = {
+        bar(record) {
+            // when bar changes, push another record in product_ids.
+            record.product_ids = [[4, 41]];
+        },
+    };
+    await mountView({
+        type: "form",
+        resModel: "partner",
+        resId: 1,
+        arch: `
+            <form>
+                <field name="bar"/>
+                <field name="product_ids" widget="one2many">
+                    <tree>
+                        <field name="display_name"/>
+                    </tree>
+                </field>
+            </form>`,
+    });
+
+    expect(queryAllTexts`.o_data_cell`).toEqual(["xphone"]);
+    expect(`.o_field_widget[name=bar] input:checked`).toHaveCount(0);
+
+    // Click on bar
+    await contains(`.o_field_widget[name=bar] input`).click();
+    expect(`.o_field_widget[name=bar] input:checked`).toHaveCount(1);
+    expect(queryAllTexts`.o_data_cell`).toEqual(["xphone", "xpad"]);
+
+    // click on discard
+    await contains(`.o_form_button_cancel`).click();
+    expect(queryAllTexts`.o_data_cell`).toEqual(["xphone"]);
+    expect(`.o_field_widget[name=bar] input:checked`).toHaveCount(0);
+});
+
+test("discard changes on relational data on new record (1)", async () => {
+    // When bar is changed, it pushes a record in product_ids
+    // After discarding, product_ids should be empty
+    Partner._onChanges = {
+        bar(record) {
+            if (record.bar) {
+                // when bar changes, push another record in product_ids.
+                record.product_ids = [[4, 41]];
+            }
+        },
+    };
+    await mountView({
+        type: "form",
+        resModel: "partner",
+        arch: `
+            <form>
+                <field name="bar"/>
+                <field name="product_ids" widget="one2many">
+                    <tree>
+                        <field name="display_name"/>
+                    </tree>
+                </field>
+            </form>`,
+    });
+
+    expect(queryAllTexts`.o_data_cell`).toEqual([]);
+    expect(`.o_field_widget[name=bar] input:checked`).toHaveCount(0);
+
+    // Click on bar
+    await contains(`.o_field_widget[name=bar] input`).click();
+    expect(`.o_field_widget[name=bar] input:checked`).toHaveCount(1);
+    expect(queryAllTexts`.o_data_cell`).toEqual(["xpad"]);
+
+    // click on discard
+    await contains(`.o_form_button_cancel`).click();
+    expect(queryAllTexts`.o_data_cell`).toEqual([]);
+    expect(`.o_field_widget[name=bar] input:checked`).toHaveCount(0);
+});
+
+test("discard changes on relational data on new record (2)", async () => {
+    // An initial onChange push a record in product_ids
+    // When bar is changed, it pushes a second record in product_ids
+    // After discarding, product_ids should contain the inital record pushed by the inital onChange
+    Partner._onChanges = {
+        product_ids(record) {
+            record.product_ids = [[4, 41]];
+        },
+        bar(record) {
+            if (record.bar) {
+                // when bar changes, push another record in product_ids.
+                record.product_ids = [[4, 37]];
+            }
+        },
+    };
+    await mountView({
+        type: "form",
+        resModel: "partner",
+        arch: `
+            <form>
+                <field name="bar"/>
+                <field name="product_ids" widget="one2many">
+                    <tree>
+                        <field name="display_name"/>
+                    </tree>
+                </field>
+            </form>`,
+    });
+
+    expect(queryAllTexts`.o_data_cell`).toEqual(["xpad"]);
+    expect(`.o_field_widget[name=bar] input:checked`).toHaveCount(0);
+
+    // Click on bar
+    await contains(`.o_field_widget[name=bar] input`).click();
+    expect(`.o_field_widget[name=bar] input:checked`).toHaveCount(1);
+    expect(queryAllTexts`.o_data_cell`).toEqual(["xpad", "xphone"]);
+
+    // click on discard
+    await contains(`.o_form_button_cancel`).click();
+    expect(queryAllTexts`.o_data_cell`).toEqual(["xpad"]);
+    expect(`.o_field_widget[name=bar] input:checked`).toHaveCount(0);
+});
+
 test(`discard changes on a new (non dirty, except for defaults) form view`, async () => {
     Partner._fields.foo = fields.Char({ default: "ABC" });
 
@@ -4732,7 +4950,7 @@ test(`keynav: switching to another record from an invalid one`, async () => {
     expect(`.o_field_widget[name=foo]`).toHaveClass("o_required_modifier");
 
     await contains(`.o_field_widget[name=foo] input`).edit("");
-    press(["alt", "n"]);
+    await press(["alt", "n"]);
     await animationFrame();
     expect(`.o_breadcrumb`).toHaveText("first record");
     expect(`.o_form_status_indicator .text-danger`).toHaveAttribute(
@@ -4758,7 +4976,7 @@ test.tags("desktop")(
         expect(`.o_pager_counter`).toHaveText("1 / 2");
 
         await contains(`.o_field_widget[name=foo] input`).edit("");
-        press(["alt", "n"]);
+        await press(["alt", "n"]);
         await animationFrame();
         expect(`.o_pager_counter`).toHaveText("1 / 2");
     }
@@ -4820,12 +5038,12 @@ test(`keynav: switching to another record from a dirty one`, async () => {
     expect(`.o_field_widget[name=foo] input`).toHaveValue("yop");
 
     await contains(`.o_field_widget[name=foo] input`).edit("new value", { confirm: false });
-    press(["alt", "n"]);
+    await press(["alt", "n"]);
     await animationFrame();
     expect.verifySteps(["web_save"]);
     expect(`.o_field_widget[name=foo] input`).toHaveValue("blip");
 
-    press(["alt", "p"]);
+    await press(["alt", "p"]);
     await animationFrame();
     expect.verifySteps([]);
     expect(`.o_field_widget[name=foo] input`).toHaveValue("new value");
@@ -4845,11 +5063,11 @@ test.tags("desktop")(
         expect(getPagerLimit()).toBe(2);
 
         await contains(`.o_field_widget[name=foo] input`).edit("new value", { confirm: false });
-        press(["alt", "n"]);
+        await press(["alt", "n"]);
         await animationFrame();
         expect(`.o_pager_counter`).toHaveText("2 / 2");
 
-        press(["alt", "p"]);
+        await press(["alt", "p"]);
         await animationFrame();
         expect(`.o_pager_counter`).toHaveText("1 / 2");
     }
@@ -7769,7 +7987,7 @@ test(`can save without any dirty translatable fields`, async () => {
 
     await contains(`.o_form_button_save`, { visible: false }).click();
     expect(`.alert .o_field_translate`).toHaveCount(0);
-    expect(`.o_form_saved`, { visible: false }).toHaveCount(1);
+    expect(`.o_form_saved`).toHaveCount(1);
     expect.verifySteps([]);
 });
 
@@ -8288,15 +8506,15 @@ test.tags("desktop")(`display tooltips for buttons (debug = false)`, async () =>
         `,
     });
 
-    hover(`button[name='empty_method']`);
+    await hover(`button[name='empty_method']`);
     await runAllTimers();
     expect(`.o-tooltip`).toHaveCount(0);
 
-    hover(`button[name='some_method']`);
+    await hover(`button[name='some_method']`);
     await runAllTimers();
     expect(`.o-tooltip`).toHaveText("This is title");
 
-    hover(`button[name='other_method']`);
+    await hover(`button[name='other_method']`);
     await runAllTimers();
     expect(`.o-tooltip`).toHaveText("Button2\n\nhelp Button2");
 });
@@ -8318,19 +8536,19 @@ test.tags("desktop")(`display tooltips for buttons (debug = true)`, async () => 
         `,
     });
 
-    hover(`button[name='empty_method']`);
+    await hover(`button[name='empty_method']`);
     await runAllTimers();
     expect(`.o-tooltip`).toHaveText(
         "Button : Empty Button\nObject:partner\nButton Type:object\nMethod:empty_method"
     );
 
-    hover(`button[name='some_method']`);
+    await hover(`button[name='some_method']`);
     await runAllTimers();
     expect(`.o-tooltip`).toHaveText(
         `Button : Button\n\nThis is title\n\nObject:partner\nReadonly:display_name == 'readonly'\nButton Type:object\nMethod:some_method`
     );
 
-    hover(`button[name='other_method']`);
+    await hover(`button[name='other_method']`);
     await runAllTimers();
     expect(`.o-tooltip`).toHaveText(
         `Button : Button2\n\nhelp Button2\n\nObject:partner\nButton Type:object\nMethod:other_method`
@@ -8633,7 +8851,7 @@ test.tags("desktop")(`proper stringification in debug mode tooltip`, async () =>
         `,
     });
 
-    hover(`[name='product_id']`);
+    await hover(`[name='product_id']`);
     await runAllTimers();
     expect(`.o-tooltip--technical > li[data-item="context"]`).toHaveCount(1);
     expect(`.o-tooltip--technical > li[data-item="context"]`).toHaveText(/{'lang': 'en_US'}/);
@@ -8662,7 +8880,7 @@ test.tags("desktop")(`field tooltip in debug mode, on field with domain attr`, a
         `,
     });
 
-    hover(`[name='product_id']`);
+    await hover(`[name='product_id']`);
     await runAllTimers();
     expect(`.o-tooltip--technical > li[data-item="domain"]`).toHaveCount(1);
     expect(`.o-tooltip--technical > li[data-item="domain"]`).toHaveText(/\[\['id', '>', 3\]\]/);
@@ -8683,7 +8901,7 @@ test.tags("desktop")(`do not display unset attributes in debug field tooltip`, a
         `,
     });
 
-    hover(`[name='product_id']`);
+    await hover(`[name='product_id']`);
     await runAllTimers();
     expect(queryAllTexts`.o-tooltip--technical > li`).toEqual([
         "Label:Product",
@@ -9391,13 +9609,13 @@ test.tags("desktop")(`company_dependent field in form view, in multi company gro
         `,
     });
 
-    hover(`.o_form_label[for=product_id_0] sup`);
+    await hover(`.o_form_label[for=product_id_0] sup`);
     await runAllTimers();
     expect(`.o-tooltip .o-tooltip--help`).toHaveText(
         "this is a tooltip\n\nValues set here are company-specific."
     );
 
-    hover(`.o_form_label[for=foo_0] sup`);
+    await hover(`.o_form_label[for=foo_0] sup`);
     await runAllTimers();
     expect(`.o-tooltip .o-tooltip--help`).toHaveText("Values set here are company-specific.");
 });
@@ -9424,7 +9642,7 @@ test.tags("desktop")(
             `,
         });
 
-        hover(`.o_form_label sup`);
+        await hover(`.o_form_label sup`);
         await runAllTimers();
         expect(`.o-tooltip .o-tooltip--help`).toHaveText("this is a tooltip");
     }
@@ -9776,11 +9994,11 @@ test.tags("desktop")(`help on field is shown without debug mode -- form`, async 
         `,
     });
 
-    hover(`.o_form_label[for=foo_0] sup`);
+    await hover(`.o_form_label[for=foo_0] sup`);
     await runAllTimers();
     expect(`.o-tooltip .o-tooltip--help`).toHaveText(/foo xml tooltip/);
 
-    hover(`.o_form_label[for=bar_0] sup`);
+    await hover(`.o_form_label[for=bar_0] sup`);
     await runAllTimers();
     expect(`.o-tooltip .o-tooltip--help`).toHaveText(/bar xml tooltip/);
 });
@@ -11140,3 +11358,62 @@ test("onchange returns values w.r.t. extended record specs, for not extended one
     await contains(`.o_form_button_save`).click();
     expect.verifySteps(["web_save"]);
 });
+
+test(`do not perform button action for records with invalid datas`, async () => {
+        mockService("action", {
+            doActionButton(params) {
+                expect.step("Perform Action");
+                expect(params.name).toBe("lovely action");
+            },
+        });
+        mockService("notification", {
+            add: (message) => {
+                expect.step(`Pop Up: Invalid Field: ${message}`);
+            },
+        });
+        defineActions([
+            {
+                id: "lovely action",
+                name: "lovely action",
+                res_model: "partner",
+                type: "ir.actions.server",
+            },
+        ]);
+        patchWithCleanup(FormController.prototype, {
+            beforeExecuteActionButton(clickParams) {
+                expect.step("Check/prepare record datas");
+                return super.beforeExecuteActionButton(clickParams);
+            }
+        });
+        onRpc("partner", "web_save", () => {
+            expect.step("web_save");
+        });
+        // The records data are invalid since foo is required
+        Partner._records[0].name = "Bob";
+        Partner._records[0].foo = "";
+        await mountView({
+            resModel: "partner",
+            type: "form",
+            arch: `
+                <form>
+                    <field name="foo" required="1"></field>
+                    <button type="action" name="lovely action" string="Use Foo"/>
+                </form>`,
+            resId: 1,
+        });
+        expect.verifySteps([]);
+        // Try to perform the action with invalid datas
+        await contains(".btn[name='lovely action']").click();
+        // the action should not be called thanks to the `_checkValidity`
+        expect.verifySteps([
+            "Check/prepare record datas",
+            "Pop Up: Invalid Field: <ul><li>Foo</li></ul>",
+        ]);
+        // Edit the required field
+        await contains(`.o_input`).edit("Foo Value");
+        // Try to perform the action once more
+        await contains(".btn[name='lovely action']").click();
+        // the record should have been saved and the action performed.
+        expect.verifySteps(["Check/prepare record datas", "web_save", "Perform Action"]);
+    }
+);

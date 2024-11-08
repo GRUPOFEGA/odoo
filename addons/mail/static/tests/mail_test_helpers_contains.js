@@ -241,7 +241,15 @@ function _click(
     return _triggerEvents(
         el,
         selector,
-        ["pointerdown", "mousedown", "focus", "pointerup", "mouseup", ["click", mouseEventInit]],
+        [
+            "pointerdown",
+            "mousedown",
+            "focus",
+            "focusin",
+            "pointerup",
+            "mouseup",
+            ["click", mouseEventInit],
+        ],
         { skipVisibilityCheck }
     );
 }
@@ -838,7 +846,7 @@ class Contains {
         if (target === getFixture() && queryFirst(this.selector) === target) {
             elems = [target];
         } else {
-            elems = [...queryAll(this.selector, { root: target })];
+            elems = queryAll(this.selector, { root: target });
         }
         const baseRes = elems
             .map((el) => (this.options.shadowRoot ? el.shadowRoot : el))

@@ -39,7 +39,17 @@ class IrFilters(models.Model):
 
     def copy_data(self, default=None):
         vals_list = super().copy_data(default=default)
+        # NULL Integer field value read as 0, wouldn't matter except in this case will trigger
+        # check_res_id_only_when_embedded_action
+        for vals in vals_list:
+            if vals.get('embedded_parent_res_id') == 0:
+                del vals['embedded_parent_res_id']
         return [dict(vals, name=_("%s (copy)", ir_filter.name)) for ir_filter, vals in zip(self, vals_list)]
+
+    def write(self, vals):
+        new_filter = super().write(vals)
+        self.check_access_rule('write')
+        return new_filter
 
     def _get_eval_domain(self):
         self.ensure_one()
@@ -117,7 +127,7 @@ class IrFilters(models.Model):
     def create_or_replace(self, vals):
         action_id = vals.get('action_id')
         embedded_action_id = vals.get('embedded_action_id')
-        if not embedded_action_id and vals.get('embedded_parent_res_id'):
+        if not embedded_action_id and 'embedded_parent_res_id' in vals:
             del vals['embedded_parent_res_id']
         embedded_parent_res_id = vals.get('embedded_parent_res_id')
         current_filters = self.get_filters(vals['model_id'], action_id, embedded_action_id, embedded_parent_res_id)

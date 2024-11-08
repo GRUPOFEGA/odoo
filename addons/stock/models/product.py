@@ -177,8 +177,15 @@ class Product(models.Model):
             # Calculate the moves that were done before now to calculate back in time (as most questions will be recent ones)
             domain_move_in_done = [('state', '=', 'done'), ('date', '>', to_date)] + domain_move_in_done
             domain_move_out_done = [('state', '=', 'done'), ('date', '>', to_date)] + domain_move_out_done
-            moves_in_res_past = {product.id: product_qty for product, product_qty in Move._read_group(domain_move_in_done, ['product_id'], ['product_qty:sum'])}
-            moves_out_res_past = {product.id: product_qty for product, product_qty in Move._read_group(domain_move_out_done, ['product_id'], ['product_qty:sum'])}
+
+            groupby = ['product_id', 'product_uom']
+            moves_in_res_past = defaultdict(float)
+            for product, uom, quantity in Move._read_group(domain_move_in_done, groupby, ['quantity:sum']):
+                moves_in_res_past[product.id] += uom._compute_quantity(quantity, product.uom_id)
+
+            moves_out_res_past = defaultdict(float)
+            for product, uom, quantity in Move._read_group(domain_move_out_done, groupby, ['quantity:sum']):
+                moves_out_res_past[product.id] += uom._compute_quantity(quantity, product.uom_id)
 
         res = dict()
         for product in self.with_context(prefetch_fields=False):
@@ -306,13 +313,17 @@ class Product(models.Model):
         # this optimizes [('location_id', 'child_of', locations.ids)]
         # by avoiding the ORM to search for children locations and injecting a
         # lot of location ids into the main query
-        paths_domain = expression.OR([[('parent_path', '=like', loc.parent_path + '%')] for loc in locations])
-        loc_domain = [('location_id', 'any', paths_domain)]
-        dest_loc_domain = [
-            '|',
-            '&', ('location_final_id', '!=', False), ('location_final_id', 'any', paths_domain),
-            '&', ('location_final_id', '=', False), ('location_dest_id', 'any', paths_domain),
-        ]
+        if self.env.context.get('strict'):
+            loc_domain = [('location_id', 'in', locations.ids)]
+            dest_loc_domain = [('location_dest_id', 'in', locations.ids)]
+        elif locations:
+            paths_domain = expression.OR([[('parent_path', '=like', loc.parent_path + '%')] for loc in locations])
+            loc_domain = [('location_id', 'any', paths_domain)]
+            dest_loc_domain = [
+                '|',
+                '&', ('location_final_id', '!=', False), ('location_final_id', 'any', paths_domain),
+                '&', ('location_final_id', '=', False), ('location_dest_id', 'any', paths_domain),
+            ]
 
         # returns: (domain_quant_loc, domain_move_in_loc, domain_move_out_loc)
         return (
@@ -647,6 +658,17 @@ class Product(models.Model):
         or_domains = expression.OR(or_domains)
         return expression.AND([base_domain, or_domains])
 
+    def filter_has_routes(self):
+        """ Return products with route_ids
+            or whose categ_id has total_route_ids.
+        """
+        products_with_routes = self.env['product.product']
+        # retrieve products with route_ids
+        products_with_routes += self.search([('id', 'in', self.ids), ('route_ids', '!=', False)])
+        # retrive products with categ_ids having routes
+        products_with_routes += self.search([('id', 'in', (self - products_with_routes).ids), ('categ_id.total_route_ids', '!=', False)])
+        return products_with_routes
+
 
 class ProductTemplate(models.Model):
     _inherit = 'product.template'
@@ -894,13 +916,13 @@ class ProductTemplate(models.Model):
             raise UserError(_('You still have some active reordering rules on this product. Please archive or delete them first.'))
         if any('is_storable' in vals and vals['is_storable'] != prod_tmpl.is_storable for prod_tmpl in self):
             existing_done_move_lines = self.env['stock.move.line'].sudo().search([
-                ('product_id', 'in', self.mapped('product_variant_ids').ids),
+                ('product_id', 'in', self.with_context(active_test=False).mapped('product_variant_ids').ids),
                 ('state', '=', 'done'),
             ], limit=1)
             if existing_done_move_lines:
                 raise UserError(_("You can not change the inventory tracking of a product that was already used."))
             existing_reserved_move_lines = self.env['stock.move.line'].sudo().search([
-                ('product_id', 'in', self.mapped('product_variant_ids').ids),
+                ('product_id', 'in', self.with_context(active_test=False).mapped('product_variant_ids').ids),
                 ('state', 'in', ['partially_available', 'assigned']),
             ], limit=1)
             if existing_reserved_move_lines:
@@ -1030,7 +1052,7 @@ class ProductCategory(models.Model):
         tracking=True,
     )
     total_route_ids = fields.Many2many(
-        'stock.route', string='Total routes', compute='_compute_total_route_ids',
+        'stock.route', string='Total routes', compute='_compute_total_route_ids', search='_search_total_route_ids',
         readonly=True)
     putaway_rule_ids = fields.One2many('stock.putaway.rule', 'category_id', 'Putaway Rules')
     packaging_reserve_method = fields.Selection([
@@ -1039,6 +1061,10 @@ class ProductCategory(models.Model):
         help="Reserve Only Full Packagings: will not reserve partial packagings. If customer orders 2 pallets of 1000 units each and you only have 1600 in stock, then only 1000 will be reserved\n"
              "Reserve Partial Packagings: allow reserving partial packagings. If customer orders 2 pallets of 1000 units each and you only have 1600 in stock, then 1600 will be reserved")
     filter_for_stock_putaway_rule = fields.Boolean('stock.putaway.rule', store=False, search='_search_filter_for_stock_putaway_rule')
+
+    def _search_total_route_ids(self, operator, value):
+        categ_ids = self.filtered_domain([('total_route_ids', operator, value)]).ids
+        return [('id', 'in', categ_ids)]
 
     def _compute_total_route_ids(self):
         for category in self:

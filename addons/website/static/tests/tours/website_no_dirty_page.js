@@ -41,7 +41,7 @@ const makeSteps = (steps = []) => [
                 }, 999);
             });
         },
-    }, 
+    },
     {
         trigger: "body.o_test_delay",
     },
@@ -81,14 +81,15 @@ wTourUtils.registerWebsitePreviewTour('website_no_dirty_page', {
         // TODO this should be done in a dedicated test which would be testing
         // all default snippet texts behaviors. Will be done in master where a
         // task will review this feature.
+        // TODO also test that applying an editor command removes that class.
         content: "Make sure the paragraph still acts as a default paragraph",
         trigger: ':iframe .s_text_image h2 + p.o_default_snippet_text',
         run: () => null,
     }, {
         content: "Click on button",
         trigger: ':iframe .s_text_image .btn',
-        run: function (actions) {
-            actions.click();
+        async run(actions) {
+            await actions.click();
             const el = this.anchor;
             const sel = el.ownerDocument.getSelection();
             sel.collapse(el, 0);
@@ -105,7 +106,7 @@ wTourUtils.registerWebsitePreviewTour('website_no_dirty_lazy_image', {
     ...wTourUtils.dragNDrop({
         id: 's_text_image',
         name: 'Text - Image',
-    }), 
+    }),
     {
         // Ensure the test keeps testing what it should test (eg if we ever
         trigger: ':iframe img.o_lang_flag[loading="lazy"]',
@@ -115,7 +116,7 @@ wTourUtils.registerWebsitePreviewTour('website_no_dirty_lazy_image', {
         // remove the lazy loading on those language img))
         trigger: ':iframe #wrap .s_text_image p',
         run: 'editor SomeTestText',
-    }, 
+    },
     {
         trigger: ':iframe #wrap .s_text_image p:contains("SomeTestText")',
     },
@@ -123,7 +124,7 @@ wTourUtils.registerWebsitePreviewTour('website_no_dirty_lazy_image', {
         content: "Click elsewhere to be sure the editor fully process the new content",
         trigger: ':iframe #wrap .s_text_image img',
         run: "click",
-    }, 
+    },
     {
         trigger: '.o_we_user_value_widget[data-replace-media="true"]',
     },

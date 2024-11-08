@@ -67,7 +67,7 @@ fieldRegistry.addValidation({
     },
     useSubView: { type: Boolean, optional: true },
     label: { type: [String, { value: false }], optional: true },
-    listViewWidth: { type: [Number, [Number, Number], Function], optional: true },
+    listViewWidth: { type: [Number, { type: Array, element: Number, validate: (array) => array.length === 2 }, Function], optional: true },
 });
 
 class DefaultField extends Component {
@@ -110,7 +110,9 @@ export function fieldVisualFeedback(field, record, fieldName, fieldInfo) {
     return {
         readonly,
         required,
-        invalid: record.isFieldInvalid(fieldName),
+        invalid: field.isValid
+            ? !field.isValid(record, fieldName, fieldInfo)
+            : record.isFieldInvalid(fieldName),
         empty,
     };
 }

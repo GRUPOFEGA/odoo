@@ -87,6 +87,7 @@ regex_field_agg = re.compile(r'(\w+)(?::(\w+)(?:\((\w+)\))?)?')  # For read_grou
 regex_read_group_spec = re.compile(r'(\w+)(\.(\w+))?(?::(\w+))?$')  # For _read_group
 
 AUTOINIT_RECALCULATE_STORED_FIELDS = 1000
+GC_UNLINK_LIMIT = 100_000
 
 INSERT_BATCH_SIZE = 100
 UPDATE_BATCH_SIZE = 100
@@ -1266,6 +1267,7 @@ class BaseModel(metaclass=MetaModel):
             batch_xml_ids.clear()
 
             # try to create in batch
+            global_error_message = None
             try:
                 with cr.savepoint():
                     recs = self._load_records(data_list, mode == 'update')
@@ -1277,6 +1279,8 @@ class BaseModel(metaclass=MetaModel):
                     info = data_list[0]['info']
                     messages.append(dict(info, type='error', message=_(u"Unknown database error: '%s'", e)))
                 return
+            except UserError as e:
+                global_error_message = dict(data_list[0]['info'], type='error', message=str(e))
             except Exception:
                 pass
 
@@ -1315,6 +1319,9 @@ class BaseModel(metaclass=MetaModel):
                         'message': _(u"Found more than 10 errors and more than one error per 10 records, interrupted to avoid showing too many errors.")
                     })
                     break
+            if errors > 0 and global_error_message and global_error_message not in messages:
+                # If we cannot create the records 1 by 1, we display the error raised when we created the records simultaneously
+                messages.insert(0, global_error_message)
 
         # make 'flush' available to the methods below, in the case where XMLID
         # resolution fails, for instance
@@ -2519,7 +2526,7 @@ class BaseModel(metaclass=MetaModel):
                         if granularity == 'week':
                             year, week = date_utils.weeknumber(
                                 babel.Locale.parse(locale),
-                                range_start,
+                                value,  # provide date or datetime without UTC conversion
                             )
                             label = f"W{week} {year:04}"
 
@@ -2659,6 +2666,25 @@ class BaseModel(metaclass=MetaModel):
                 row['__domain'] = expression.AND([row['__domain'], [(fullname, '=', row[fullname])]])
 
     @api.model
+    def _read_group_get_annotated_groupby(self, groupby, lazy):
+        groupby = [groupby] if isinstance(groupby, str) else groupby
+        lazy_groupby = groupby[:1] if lazy else groupby
+
+        annotated_groupby = {}  # Key as the name in the result, value as the explicit groupby specification
+        for group_spec in lazy_groupby:
+            field_name, property_name, granularity = parse_read_group_spec(group_spec)
+            if field_name not in self._fields:
+                raise ValueError(f"Invalid field {field_name!r} on model {self._name!r}")
+            field = self._fields[field_name]
+            if property_name and field.type != 'properties':
+                raise ValueError(f"Property name {property_name!r} has to be used on a property field.")
+            if field.type in ('date', 'datetime'):
+                annotated_groupby[group_spec] = f"{field_name}:{granularity or 'month'}"
+            else:
+                annotated_groupby[group_spec] = group_spec
+        return annotated_groupby
+
+    @api.model
     @api.readonly
     def read_group(self, domain, fields, groupby, offset=0, limit=None, orderby=False, lazy=True):
         """Get the list of records in list view grouped by the given ``groupby`` fields.
@@ -2707,18 +2733,7 @@ class BaseModel(metaclass=MetaModel):
         # - Modify `groupby` default value 'month' into specific groupby specification
         # - Modify `fields` into aggregates specification of _read_group
         # - Modify the order to be compatible with the _read_group specification
-        annotated_groupby = {}  # Key as the name in the result, value as the explicit groupby specification
-        for group_spec in lazy_groupby:
-            field_name, property_name, granularity = parse_read_group_spec(group_spec)
-            if field_name not in self._fields:
-                raise ValueError(f"Invalid field {field_name!r} on model {self._name!r}")
-            field = self._fields[field_name]
-            if property_name and field.type != 'properties':
-                raise ValueError(f"Property name {property_name!r} has to be used on a property field.")
-            if field.type in ('date', 'datetime'):
-                annotated_groupby[group_spec] = f"{field_name}:{granularity or 'month'}"
-            else:
-                annotated_groupby[group_spec] = group_spec
+        annotated_groupby = self._read_group_get_annotated_groupby(groupby, lazy=lazy)
 
         annotated_aggregates = {  # Key as the name in the result, value as the explicit aggregate specification
             f"{lazy_groupby[0].split(':')[0]}_count" if lazy and len(lazy_groupby) == 1 else '__count': '__count',
@@ -3052,6 +3067,9 @@ class BaseModel(metaclass=MetaModel):
                 return SQL("(%s = TRUE)", sql_field)
             else:
                 return SQL("(%s IS NULL OR %s = FALSE)", sql_field, sql_field)
+
+        if (field.relational or field.name == 'id') and operator in ('=', '!=') and isinstance(value, NewId):
+            return SQL("TRUE") if operator in expression.NEGATIVE_TERM_OPERATORS else SQL("FALSE")
 
         # comparison with null
         # except for some basic types, where we need to check the empty value
@@ -3829,7 +3847,9 @@ class BaseModel(metaclass=MetaModel):
         langs = set(langs or [l[0] for l in self.env['res.lang'].get_installed()])
         self_lang = self.with_context(check_translations=True, prefetch_langs=True)
         val_en = self_lang.with_context(lang='en_US')[field_name]
-        if not callable(field.translate):
+        if not field.translate:
+            translations = []
+        elif field.translate is True:
             translations = [{
                 'lang': lang,
                 'source': val_en,
@@ -7231,13 +7251,16 @@ class TransientModel(Model):
         # Never delete rows used in last 5 minutes
         seconds = max(seconds, 300)
         self._cr.execute(SQL(
-            "SELECT id FROM %s WHERE %s < %s",
+            "SELECT id FROM %s WHERE %s < %s %s",
             SQL.identifier(self._table),
             SQL("COALESCE(write_date, create_date, (now() AT TIME ZONE 'UTC'))::timestamp"),
             SQL("(now() AT TIME ZONE 'UTC') - interval %s", f"{seconds} seconds"),
+            SQL(f"LIMIT { GC_UNLINK_LIMIT }"),
         ))
         ids = [x[0] for x in self._cr.fetchall()]
         self.sudo().browse(ids).unlink()
+        if len(ids) >= GC_UNLINK_LIMIT:
+            self.env.ref('base.autovacuum_job')._trigger()
 
 
 def itemgetter_tuple(items):

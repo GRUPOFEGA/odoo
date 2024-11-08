@@ -71,7 +71,7 @@ class MailController(http.Controller):
                 # We need here to extend the "allowed_company_ids" to allow a redirection
                 # to any record that the user can access, regardless of currently visible
                 # records based on the "currently allowed companies".
-                cids_str = request.httprequest.cookies.get('cids', str(user.company_id.id))
+                cids_str = request.cookies.get('cids', str(user.company_id.id))
                 cids = [int(cid) for cid in cids_str.split('-')]
                 try:
                     record_sudo.with_user(uid).with_context(allowed_company_ids=cids).check_access_rule('read')
@@ -88,8 +88,8 @@ class MailController(http.Controller):
                     if not suggested_company:
                         raise AccessError('')
                     cids = cids + [suggested_company.id]
-                    request.future_response.set_cookie('cids', '-'.join([str(cid) for cid in cids]))
                     record_sudo.with_user(uid).with_context(allowed_company_ids=cids).check_access_rule('read')
+                    request.future_response.set_cookie('cids', '-'.join([str(cid) for cid in cids]))
             except AccessError:
                 return cls._redirect_to_messaging()
             else:

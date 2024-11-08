@@ -4,7 +4,7 @@ import { onExternalClick, useDiscussSystray } from "@mail/utils/common/hooks";
 
 import { Component, useState } from "@odoo/owl";
 
-import { hasTouch } from "@web/core/browser/feature_detection";
+import { hasTouch, isIOS } from "@web/core/browser/feature_detection";
 import { Dropdown } from "@web/core/dropdown/dropdown";
 import { useDropdownState } from "@web/core/dropdown/dropdown_hooks";
 import { _t } from "@web/core/l10n/translation";
@@ -25,15 +25,10 @@ export class MessagingMenu extends Component {
         this.action = useService("action");
         this.installPrompt = useState(useService("installPrompt"));
         this.ui = useState(useService("ui"));
-        this.state = useState({
-            addingChat: false,
-            addingChannel: false,
-        });
+        this.state = useState({ adding: false });
         this.dropdown = useDropdownState();
 
-        onExternalClick("selector", () => {
-            Object.assign(this.state, { addingChat: false, addingChannel: false });
-        });
+        onExternalClick("selector", () => Object.assign(this.state, { adding: false }));
     }
 
     beforeOpen() {
@@ -75,7 +70,7 @@ export class MessagingMenu extends Component {
             (this.store.failures.length > 0 &&
                 this.store.discuss.activeTab === "main" &&
                 !this.env.inDiscussApp) ||
-            (this.notification.permission === "prompt" &&
+            (this.shouldAskPushPermission &&
                 this.store.discuss.activeTab === "main" &&
                 !this.env.inDiscussApp) ||
             (this.canPromptToInstall &&
@@ -103,9 +98,7 @@ export class MessagingMenu extends Component {
             displayName: _t("%s has a request", this.store.odoobot.name),
             iconSrc: this.store.odoobot.avatarUrl,
             partner: this.store.odoobot,
-            isShown:
-                this.store.discuss.activeTab === "main" &&
-                this.notification.permission === "prompt",
+            isShown: this.store.discuss.activeTab === "main" && this.shouldAskPushPermission,
         };
     }
 
@@ -143,7 +136,7 @@ export class MessagingMenu extends Component {
 
     onClickNewMessage() {
         if (this.ui.isSmall || this.env.inDiscussApp) {
-            this.state.addingChat = true;
+            Object.assign(this.state, { adding: "chat" });
         } else {
             this.store.openNewMessage();
             this.dropdown.close();
@@ -229,10 +222,18 @@ export class MessagingMenu extends Component {
         if (this.canPromptToInstall) {
             value++;
         }
-        if (this.notification.permission === "prompt") {
+        if (this.shouldAskPushPermission) {
             value++;
         }
         return value;
+    }
+
+    get displayStartConversation() {
+        return this.store.discuss.activeTab !== "channel" && !this.state.adding;
+    }
+
+    get shouldAskPushPermission() {
+        return this.notification.permission === "prompt" && !isIOS();
     }
 }
 

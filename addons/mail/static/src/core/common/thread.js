@@ -5,10 +5,12 @@ import { useVisible } from "@mail/utils/common/hooks";
 
 import {
     Component,
+    markRaw,
     onMounted,
     onWillDestroy,
     onWillPatch,
     onWillUpdateProps,
+    reactive,
     toRaw,
     useChildSubEnv,
     useEffect,
@@ -18,7 +20,7 @@ import {
 
 import { _t } from "@web/core/l10n/translation";
 import { Transition } from "@web/core/transition";
-import { useBus, useService } from "@web/core/utils/hooks";
+import { useBus, useRefListener, useService } from "@web/core/utils/hooks";
 import { escape } from "@web/core/utils/strings";
 
 export const PRESENT_VIEWPORT_THRESHOLD = 3;
@@ -65,13 +67,13 @@ export class Thread extends Component {
     setup() {
         super.setup();
         this.escape = escape;
-        this.refByMessageId = new Map();
         this.registerMessageRef = this.registerMessageRef.bind(this);
         this.store = useState(useService("mail.store"));
         this.state = useState({
             isReplyingTo: false,
             mountedAndLoaded: false,
             showJumpPresent: false,
+            scrollTop: null,
         });
         this.lastJumpPresent = this.props.jumpPresent;
         this.orm = useService("orm");
@@ -79,6 +81,12 @@ export class Thread extends Component {
         this.messageHighlight = this.env.messageHighlight
             ? useState(this.env.messageHighlight)
             : null;
+        this.scrollingToHighlight = false;
+        this.refByMessageId = reactive(new Map(), () => this.scrollToHighlighted());
+        useEffect(
+            () => this.scrollToHighlighted(),
+            () => [this.messageHighlight?.highlightedMessageId]
+        );
         this.present = useRef("load-newer");
         /**
          * This is the reference element with the scrollbar. The reference can
@@ -86,6 +94,34 @@ export class Thread extends Component {
          * scrollable (in other cases).
          */
         this.scrollableRef = this.props.scrollRef ?? useRef("messages");
+        useRefListener(
+            this.scrollableRef,
+            "scrollend",
+            () => (this.state.scrollTop = this.scrollableRef.el.scrollTop)
+        );
+        useEffect(
+            (loadNewer, mountedAndLoaded, unreadSynced) => {
+                if (
+                    loadNewer ||
+                    unreadSynced || // just marked as unread (local and server state are synced)
+                    !mountedAndLoaded ||
+                    !this.props.thread.selfMember ||
+                    !this.scrollableRef.el
+                ) {
+                    return;
+                }
+                const el = this.scrollableRef.el;
+                if (Math.abs(el.scrollTop + el.clientHeight - el.scrollHeight) <= 1) {
+                    this.props.thread.selfMember.hideUnreadBanner = true;
+                }
+            },
+            () => [
+                this.props.thread.loadNewer,
+                this.state.mountedAndLoaded,
+                this.props.thread.selfMember?.unreadSynced,
+                this.state.scrollTop,
+            ]
+        );
         this.loadOlderState = useVisible(
             "load-older",
             async () => {
@@ -145,15 +181,6 @@ export class Thread extends Component {
                 }
             },
             () => [this.state.mountedAndLoaded]
-        );
-        useEffect(
-            () => {
-                const el = this.refByMessageId.get(this.messageHighlight?.highlightedMessageId)?.el;
-                if (el) {
-                    this.messageHighlight.scrollTo(el);
-                }
-            },
-            () => [this.state.mountedAndLoaded, this.messageHighlight?.highlightedMessageId]
         );
         onMounted(() => {
             if (!this.env.chatter || this.env.chatter?.fetchMessages) {
@@ -393,7 +420,10 @@ export class Thread extends Component {
             };
         });
         useEffect(applyScroll);
-        useChildSubEnv({ onImageLoaded: applyScroll });
+        useChildSubEnv({
+            onImageLoaded: applyScroll,
+            onClickNotification: this.onClickNotification.bind(this),
+        });
         const observer = new ResizeObserver(applyScroll);
         useEffect(
             (el, mountedAndLoaded) => {
@@ -423,8 +453,8 @@ export class Thread extends Component {
     }
 
     get newMessageBannerText() {
-        if (this.props.thread.selfMember?.localMessageUnreadCounter > 1) {
-            return _t("%s new messages", this.props.thread.selfMember.localMessageUnreadCounter);
+        if (this.props.thread.selfMember?.totalUnreadMessageCounter > 1) {
+            return _t("%s new messages", this.props.thread.selfMember.totalUnreadMessageCounter);
         }
         return _t("1 new message");
     }
@@ -453,7 +483,7 @@ export class Thread extends Component {
     }
 
     getMessageClassName(message) {
-        return this.messageHighlight?.highlightedMessageId === message.id
+        return !message.isNotification && this.messageHighlight?.highlightedMessageId === message.id
             ? "o-highlighted bg-view shadow-lg pb-1"
             : "";
     }
@@ -485,7 +515,7 @@ export class Thread extends Component {
 
     async onClickUnreadMessagesBanner() {
         await this.props.thread.loadAround(this.props.thread.selfMember.localNewMessageSeparator);
-        this.messageHighlight.highlightMessage(
+        this.messageHighlight?.highlightMessage(
             this.props.thread.firstUnreadMessage,
             this.props.thread
         );
@@ -494,8 +524,9 @@ export class Thread extends Component {
     registerMessageRef(message, ref) {
         if (!ref) {
             this.refByMessageId.delete(message.id);
+            return;
         }
-        this.refByMessageId.set(message.id, ref);
+        this.refByMessageId.set(message.id, markRaw(ref));
     }
 
     isSquashed(msg, prevMsg) {
@@ -521,5 +552,16 @@ export class Thread extends Component {
             return false;
         }
         return msg.datetime.ts - prevMsg.datetime.ts < 60 * 1000;
+    }
+
+    scrollToHighlighted() {
+        if (!this.messageHighlight?.highlightedMessageId || this.scrollingToHighlight) {
+            return;
+        }
+        const el = this.refByMessageId.get(this.messageHighlight.highlightedMessageId)?.el;
+        if (el) {
+            this.scrollingToHighlight = true;
+            this.messageHighlight.scrollTo(el).then(() => (this.scrollingToHighlight = false));
+        }
     }
 }

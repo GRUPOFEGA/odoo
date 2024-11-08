@@ -112,6 +112,12 @@ class Web_Editor(http.Controller):
         if icon.isdigit():
             if int(icon) == 57467:
                 font = "/web/static/fonts/tiktok_only.woff"
+            elif int(icon) == 61593:  # F099
+                icon = "59392"  # E800
+                font = "/web/static/fonts/twitter_x_only.woff"
+            elif int(icon) == 61569:  # F081
+                icon = "59395"  # E803
+                font = "/web/static/fonts/twitter_x_only.woff"
 
         size = max(width, height, 1) if width else size
         width = width or size
@@ -257,11 +263,12 @@ class Web_Editor(http.Controller):
     def video_url_data(self, video_url, autoplay=False, loop=False,
                        hide_controls=False, hide_fullscreen=False, hide_yt_logo=False,
                        hide_dm_logo=False, hide_dm_share=False):
+        # TODO: In Master, remove the parameter "hide_yt_logo" (the parameter is
+        # no longer supported in the YouTube API.)
         return get_video_url_data(
             video_url, autoplay=autoplay, loop=loop,
             hide_controls=hide_controls, hide_fullscreen=hide_fullscreen,
-            hide_yt_logo=hide_yt_logo, hide_dm_logo=hide_dm_logo,
-            hide_dm_share=hide_dm_share
+            hide_dm_logo=hide_dm_logo, hide_dm_share=hide_dm_share
         )
 
     @http.route('/web_editor/attachment/add_data', type='json', auth='user', methods=['POST'], website=True)
@@ -334,6 +341,7 @@ class Web_Editor(http.Controller):
         """This route is used to determine the original of an attachment so that
         it can be used as a base to modify it again (crop/optimization/filters).
         """
+        self._clean_context()
         attachment = None
         if src.startswith('/web/image'):
             with contextlib.suppress(werkzeug.exceptions.NotFound, MissingError):
@@ -394,6 +402,15 @@ class Web_Editor(http.Controller):
                 'type': 'url',
                 'url': url,
             })
+            # The code issues a HEAD request to retrieve headers from the URL.
+            # This approach is beneficial when the URL doesn't conclude with an
+            # image extension. By verifying the MIME type, the code ensures that
+            # only supported image types are incorporated into the data.
+            response = requests.head(url, timeout=10)
+            if response.status_code == 200:
+                mime_type = response.headers['content-type']
+                if mime_type in SUPPORTED_IMAGE_MIMETYPES:
+                    attachment_data['mimetype'] = mime_type
         else:
             raise UserError(_("You need to specify either data or url to create an attachment."))
 
@@ -573,6 +590,8 @@ class Web_Editor(http.Controller):
         Creates a modified copy of an attachment and returns its image_src to be
         inserted into the DOM.
         """
+        self._clean_context()
+        attachment = request.env['ir.attachment'].browse(attachment.id)
         fields = {
             'original_id': attachment.id,
             'datas': data,

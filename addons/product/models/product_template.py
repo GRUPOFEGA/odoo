@@ -3,6 +3,7 @@
 import itertools
 import logging
 from collections import defaultdict
+import copy
 
 from odoo import api, fields, models, tools, _
 from odoo.exceptions import UserError, ValidationError
@@ -538,7 +539,7 @@ class ProductTemplate(models.Model):
         Product = self.env['product.product']
         templates = self.browse()
 
-        product_domain = domain.copy()
+        product_domain = copy.deepcopy(domain)
         if search_pp:
             for term in product_domain:  # Replace id related leaf to product_tmpl_id
                 if term[0] == 'id':
@@ -600,7 +601,7 @@ class ProductTemplate(models.Model):
         return {
             'name': _('Price Rules'),
             'view_mode': 'tree,form',
-            'views': [(self.env.ref('product.product_pricelist_item_tree_view_from_product').id, 'tree'), (False, 'form')],
+            'views': [(self.env.ref('product.product_pricelist_item_tree_view_from_product').id, 'tree')],
             'res_model': 'product.pricelist.item',
             'type': 'ir.actions.act_window',
             'target': 'current',
@@ -1469,3 +1470,17 @@ class ProductTemplate(models.Model):
                 'record': acoustic_bloc_screens.product_variant_ids[1],
                 'noupdate': True,
             }])
+
+    def _get_list_price(self, price):
+        """ Get the product sales price from a public price based on taxes defined on the product.
+        To be overridden in accounting module."""
+        self.ensure_one()
+        return price
+
+    @api.model
+    def _service_tracking_blacklist(self):
+        """ Service tracking field is used to distinguish some specific categories of products.
+        Those products shouldn't be displayed or used in unrelated applications.
+        This method returns a domain targeting all those specific products (events, courses, ...).
+        """
+        return []

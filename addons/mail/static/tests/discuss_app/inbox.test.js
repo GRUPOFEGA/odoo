@@ -6,6 +6,7 @@ import {
     insertText,
     onRpcBefore,
     openDiscuss,
+    scroll,
     start,
     startServer,
     step,
@@ -417,6 +418,44 @@ test("inbox: mark all messages as read", async () => {
     await contains("button:disabled", { text: "Mark all read" });
 });
 
+test("inbox: mark as read should not display jump to present", async () => {
+    const pyEnv = await startServer();
+    const channelId = pyEnv["discuss.channel"].create({ name: "General" });
+    const msgIds = pyEnv["mail.message"].create(
+        Array(30)
+            .keys()
+            .map((i) => ({
+                body: "not empty".repeat(100),
+                model: "discuss.channel",
+                needaction: true,
+                res_id: channelId,
+            }))
+    );
+    pyEnv["mail.notification"].create(
+        Array(30)
+            .keys()
+            .map((i) => ({
+                mail_message_id: msgIds[i],
+                notification_type: "inbox",
+                res_partner_id: serverState.partnerId,
+            }))
+    );
+    await start();
+    await openDiscuss();
+    // scroll up so that there's the "Jump to Present".
+    // So that assertion of negative matches the positive assertion
+    await contains(".o-mail-Message", { count: 30 });
+    await scroll(".o-mail-Thread", 0);
+    await contains(".o-mail-Thread-banner", {
+        text: "You're viewing older messagesJump to Present",
+    });
+    await click(".o-mail-Discuss-header button:enabled", { text: "Mark all read" });
+    await contains(".o-mail-Thread-banner", {
+        count: 0,
+        text: "You're viewing older messagesJump to Present",
+    });
+});
+
 test("click on (non-channel/non-partner) origin thread link should redirect to form view", async () => {
     const pyEnv = await startServer();
     const fakeId = pyEnv["res.fake"].create({ name: "Some record" });
@@ -688,4 +727,29 @@ test("Clear need action counter when opening a channel", async () => {
         text: "General",
         contains: [".badge", { count: 0 }],
     });
+});
+
+test("can reply to email message", async () => {
+    const pyEnv = await startServer();
+    const partnerId = pyEnv["res.partner"].create({});
+    const messageId = pyEnv["mail.message"].create({
+        author_id: null,
+        email_from: "md@oilcompany.fr",
+        body: "an email message",
+        model: "res.partner",
+        needaction: true,
+        res_id: partnerId,
+    });
+    pyEnv["mail.notification"].create({
+        mail_message_id: messageId,
+        notification_status: "sent",
+        notification_type: "inbox",
+        res_partner_id: serverState.partnerId,
+    });
+    await start();
+    await openDiscuss();
+    await contains(".o-mail-Message");
+    await click("[title='Expand']");
+    await click("[title='Reply']");
+    await contains(".o-mail-Composer", { text: "Replying to md@oilcompany.fr" });
 });

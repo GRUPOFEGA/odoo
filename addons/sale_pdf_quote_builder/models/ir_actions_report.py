@@ -4,11 +4,9 @@ import base64
 import io
 import json
 
-from PyPDF2 import PdfFileReader, PdfFileWriter
-from PyPDF2.generic import NameObject, createStringObject
-
 from odoo import _, api, models
 from odoo.tools import format_amount, format_date, format_datetime, pdf
+from odoo.tools.pdf import PdfFileWriter, PdfFileReader, NameObject, createStringObject
 
 from odoo.addons.sale_pdf_quote_builder.const import DEFAULT_FORM_FIELD_PATH_MAPPING
 
@@ -86,7 +84,7 @@ class IrActionsReport(models.Model):
 
     @api.model
     def _add_pages_to_writer(self, writer, document, all_form_fields=None, sol_id=None):
-        """Add a PDF doc to the writer and fill the form fields present in the pages if needed.
+        """Add a PDF doc to the writer and fill the form text fields present in the pages if needed.
 
         :param PdfFileWriter writer: the writer to which pages needs to be added
         :param bytes document: the document to add in the final pdf
@@ -101,7 +99,7 @@ class IrActionsReport(models.Model):
 
         field_names = set()
         if all_form_fields is not None:
-            field_names = reader.getFields()
+            field_names = reader.getFormTextFields()
             if field_names:
                 all_form_fields.update([prefix + field_name for field_name in field_names])
 

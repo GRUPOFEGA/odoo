@@ -11,7 +11,7 @@ export class IrAttachment extends webModels.IrAttachment {
         delete kwargs.ids;
         force = kwargs.force ?? true;
 
-        const [attachment] = this._filter([["id", "in", ids]]);
+        const [attachment] = this.browse(ids);
         if (!attachment.res_model) {
             return true; // dummy value for mock server
         }
@@ -47,6 +47,8 @@ export class IrAttachment extends webModels.IrAttachment {
                     attachment.res_id && attachment.model !== "mail.compose.message"
                         ? { id: attachment.res_id, model: attachment.res_model }
                         : false,
+                type: attachment.type,
+                url: attachment.url,
             };
             const voice = DiscussVoiceMetadata._filter([["attachment_id", "=", attachment.id]])[0];
             if (voice) {

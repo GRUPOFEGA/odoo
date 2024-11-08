@@ -492,6 +492,7 @@ class Environment(Mapping):
         self.transaction.reset()
 
     def __new__(cls, cr, uid, context, su=False, uid_origin=None):
+        assert isinstance(cr, BaseCursor)
         if uid == SUPERUSER_ID:
             su = True
 
@@ -511,7 +512,6 @@ class Environment(Mapping):
                 return env
 
         # otherwise create environment, and add it in the set
-        assert isinstance(cr, BaseCursor)
         self = object.__new__(cls)
         self.cr, self.uid, self.su, self.uid_origin = cr, uid, su, uid_origin
         self.context = frozendict(context)
@@ -1230,6 +1230,8 @@ class Cache:
             except KeyError:
                 ids.append(record_id)
             else:
+                if field.type == "monetary":
+                    value = field.convert_to_cache(value, records.browse(record_id))
                 if val != value:
                     ids.append(record_id)
         return records.browse(ids)

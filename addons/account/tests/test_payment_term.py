@@ -142,6 +142,18 @@ class TestAccountPaymentTerms(AccountTestInvoicingCommon):
                 }),
             ],
         })
+        cls.pay_term_days_end_of_month_days_next_month_0 = cls.env['account.payment.term'].create({
+            'name': "special case days next month 0",
+            'line_ids': [
+                Command.create({
+                    'value': 'percent',
+                    'value_amount': 100,
+                    'delay_type': 'days_end_of_month_on_the',
+                    'days_next_month': 0,
+                    'nb_days': 30,
+                }),
+            ],
+        })
 
     def assertPaymentTerm(self, pay_term, invoice_date, dates):
         with Form(self.invoice) as move_form:
@@ -183,7 +195,7 @@ class TestAccountPaymentTerms(AccountTestInvoicingCommon):
         self.pay_term_a.early_pay_discount_computation = 'included'
         computed_term_a = self.pay_term_a._compute_terms(
                 fields.Date.from_string('2016-01-01'), self.env.company.currency_id, self.env.company,
-                150.0, 150.0, 1000.0, 1000.0, 1.0,
+                150.0, 150.0, 1.0, 1000.0, 1000.0,
             )
         self.assertDictEqual(
             {
@@ -198,7 +210,36 @@ class TestAccountPaymentTerms(AccountTestInvoicingCommon):
                 'line_ids': [{
                     'date': datetime.date(2016, 1, 3),
                     'company_amount': 1150.0,
-                    'foreign_amount': 151.0,
+                    'foreign_amount': 1150.0,
+                }],
+            },
+        )
+
+    def test_payment_term_compute_method_with_cash_discount_and_cash_rounding(self):
+        foreign_currency = self.other_currency
+        rate = self.env['res.currency']._get_conversion_rate(foreign_currency, self.env.company.currency_id, self.env.company, '2017-01-01')
+        self.assertEqual(rate, 0.5)
+        self.pay_term_a.early_pay_discount_computation = 'included'
+        computed_term_a = self.pay_term_a._compute_terms(
+            fields.Date.from_string('2016-01-01'), foreign_currency, self.env.company,
+            75, 150, 1, 359.18, 718.35, cash_rounding=self.cash_rounding_a,
+        )
+        self.assertDictEqual(
+            {
+                'total_amount': computed_term_a.get("total_amount"),
+                'discount_balance': computed_term_a.get("discount_balance"),
+                'discount_amount_currency': computed_term_a.get("discount_amount_currency"),
+                'line_ids': computed_term_a.get("line_ids"),
+            },
+            # What should be obtained
+            {
+                'total_amount': 434.18,
+                'discount_balance': 390.78,
+                'discount_amount_currency': 781.55,  # w/o cash rounding: 868.35 * 0.9 = 781.515
+                'line_ids': [{
+                    'date': datetime.date(2016, 1, 3),
+                    'company_amount': 434.18,
+                    'foreign_amount': 868.35,
                 }],
             },
         )
@@ -206,7 +247,7 @@ class TestAccountPaymentTerms(AccountTestInvoicingCommon):
     def test_payment_term_compute_method_without_cash_discount(self):
         computed_term_b = self.pay_term_b._compute_terms(
             fields.Date.from_string('2016-01-01'), self.env.company.currency_id, self.env.company,
-            150.0, 150.0, 1000.0, 1000.0, 1.0,
+            150.0, 150.0, 1.0, 1000.0, 1000.0,
         )
         self.assertDictEqual(
             {
@@ -221,20 +262,56 @@ class TestAccountPaymentTerms(AccountTestInvoicingCommon):
                 'line_ids': [{
                     'date': datetime.date(2016, 1, 3),
                     'company_amount': 575.0,
-                    'foreign_amount': 75.5,
+                    'foreign_amount': 575.0,
                 }, {
                     'date': datetime.date(2016, 1, 5),
                     'company_amount': 575.0,
-                    'foreign_amount': 75.5,
+                    'foreign_amount': 575.0,
                 }],
             },
         )
+
+    def test_payment_term_compute_method_without_cash_discount_with_cash_rounding(self):
+        foreign_currency = self.other_currency
+        rate = self.env['res.currency']._get_conversion_rate(foreign_currency, self.env.company.currency_id, self.env.company, '2017-01-01')
+        self.assertEqual(rate, 0.5)
+        self.pay_term_a.early_pay_discount_computation = 'included'
+        computed_term_b = self.pay_term_b._compute_terms(
+            fields.Date.from_string('2016-01-01'), foreign_currency, self.env.company,
+            75, 150, 1, 359.18, 718.35, cash_rounding=self.cash_rounding_a,
+        )
+        self.assertDictEqual(
+            {
+                'total_amount': computed_term_b.get("total_amount"),
+                'discount_balance': computed_term_b.get("discount_balance"),
+                'discount_amount_currency': computed_term_b.get("discount_amount_currency"),
+                'line_ids': computed_term_b.get("line_ids"),
+            },
+            # What should be obtained
+            {
+                'total_amount': 434.18,
+                'discount_balance': 0,
+                'discount_amount_currency': None,
+                'line_ids': [{
+                    'date': datetime.date(2016, 1, 3),
+                    'company_amount': 217.1,
+                    'foreign_amount': 434.2,
+                }, {
+                    'date': datetime.date(2016, 1, 5),
+                    'company_amount': 217.08,
+                    'foreign_amount': 434.15000000000003,
+                }],
+            },
+        )
+        # Cash rounding should not affect the totals
+        self.assertAlmostEqual(434.18, sum(line['company_amount'] for line in computed_term_b['line_ids']))
+        self.assertAlmostEqual(868.35, sum(line['foreign_amount'] for line in computed_term_b['line_ids']))
 
     def test_payment_term_compute_method_early_excluded(self):
         self.pay_term_a.early_pay_discount_computation = 'excluded'
         computed_term_a = self.pay_term_a._compute_terms(
             fields.Date.from_string('2016-01-01'), self.env.company.currency_id, self.env.company,
-            150.0, 150.0, 1000.0, 1000.0, 1.0,
+            150.0, 150.0, 1.0, 1000.0, 1000.0,
         )
 
         self.assertDictEqual(
@@ -250,7 +327,7 @@ class TestAccountPaymentTerms(AccountTestInvoicingCommon):
                 'line_ids': [{
                     'date': datetime.date(2016, 1, 3),
                     'company_amount': 1150.0,
-                    'foreign_amount': 151.0,
+                    'foreign_amount': 1150.0,
                 }],
             },
         )
@@ -574,3 +651,35 @@ class TestAccountPaymentTerms(AccountTestInvoicingCommon):
         expected_date_case_2 = self.invoice.line_ids.filtered(
             lambda l: l.account_id == self.company_data['default_account_receivable']).mapped('date_maturity')
         self.assertEqual(expected_date_case_2, [fields.Date.from_string('2024-07-31')])
+
+    def test_payment_term_days_end_of_month_days_next_month_0(self):
+        with Form(self.invoice) as case_1:
+            case_1.invoice_payment_term_id = self.pay_term_days_end_of_month_days_next_month_0
+            case_1.invoice_date = '2024-04-22'
+
+        expected_date_case_1 = self.invoice.line_ids.filtered(
+            lambda l: l.account_id == self.company_data['default_account_receivable']).mapped('date_maturity')
+        self.assertEqual(expected_date_case_1, [fields.Date.from_string('2024-05-31')])
+
+    def test_payment_term_multi_company(self):
+        """
+        Ensure that the payment term is determined by `move.company_id` rather than `user.company_id`.
+        OdooBot has `res.company(1)` set as the default company. The test checks that the payment term correctly reflects
+        the company associated with the move, independent of the user's default company.
+        """
+        user_company = self.env['res.company'].create({'name': 'user_company'})
+        other_company = self.company_data.get('company')
+        self.env.user.write({
+            'company_ids': [user_company.id, other_company.id],
+            'company_id': user_company.id,
+        })
+        self.pay_terms_a.company_id = user_company
+        self.partner_a.with_company(user_company).property_payment_term_id = self.pay_terms_a
+        self.partner_a.with_company(other_company).property_payment_term_id = False
+
+        invoice = self.env['account.move'].create({
+            'move_type': 'out_invoice',
+            'partner_id': self.partner_a.id,
+            'company_id': other_company.id
+        })
+        self.assertFalse(invoice.invoice_payment_term_id)

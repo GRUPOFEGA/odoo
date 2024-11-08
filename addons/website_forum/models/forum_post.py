@@ -347,6 +347,9 @@ class Post(models.Model):
 
     def write(self, vals):
         trusted_keys = ['active', 'is_correct', 'tag_ids']  # fields where security is checked manually
+        if 'forum_id' in vals:
+            forum = self.env['forum.forum'].browse(vals['forum_id'])
+            forum.check_access_rule('write')
         if 'content' in vals:
             vals['content'] = self._update_content(vals['content'], self.forum_id.id)
 
@@ -524,7 +527,7 @@ class Post(models.Model):
         })
         return True
 
-    def _validate(self):
+    def validate(self):
         for post in self:
             if not post.can_moderate:
                 raise AccessError(_('%d karma required to validate a post.', post.forum_id.karma_moderate))

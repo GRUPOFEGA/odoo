@@ -61,8 +61,7 @@ const odooNumberDateAdapter = {
 const odooDayAdapter = {
     normalizeServerValue(groupBy, field, readGroupResult) {
         const serverDayValue = getGroupStartingDay(field, groupBy, readGroupResult);
-        const date = deserializeDate(serverDayValue);
-        return date.toFormat("MM/dd/yyyy");
+        return toNumber(serverDayValue, DEFAULT_LOCALE);
     },
     increment(normalizedValue, step) {
         return normalizedValue + step;
@@ -121,11 +120,11 @@ const odooMonthAdapter = {
     },
     normalizeServerValue(groupBy, field, readGroupResult) {
         const firstOfTheMonth = getGroupStartingDay(field, groupBy, readGroupResult);
-        const date = deserializeDate(firstOfTheMonth);
+        const date = deserializeDate(firstOfTheMonth).reconfigure({ numberingSystem: "latn" });
         return date.toFormat("MM/yyyy");
     },
     increment(normalizedValue, step) {
-        return DateTime.fromFormat(normalizedValue, "MM/yyyy")
+        return DateTime.fromFormat(normalizedValue, "MM/yyyy", { numberingSystem: "latn" })
             .plus({ months: step })
             .toFormat("MM/yyyy");
     },

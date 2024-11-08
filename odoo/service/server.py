@@ -77,10 +77,15 @@ def memory_info(process):
 
 
 def set_limit_memory_hard():
-    if platform.system() == 'Linux' and config['limit_memory_hard']:
+    if platform.system() != 'Linux':
+        return
+    limit_memory_hard = config['limit_memory_hard']
+    if odoo.evented and config['limit_memory_hard_gevent']:
+        limit_memory_hard = config['limit_memory_hard_gevent']
+    if limit_memory_hard:
         rlimit = resource.RLIMIT_AS
         soft, hard = resource.getrlimit(rlimit)
-        resource.setrlimit(rlimit, (config['limit_memory_hard'], hard))
+        resource.setrlimit(rlimit, (limit_memory_hard, hard))
 
 def empty_pipe(fd):
     try:
@@ -174,7 +179,7 @@ class ThreadedWSGIServerReloadable(LoggingBaseWSGIServerMixIn, werkzeug.serving.
                 # If the value can't be parsed to an integer then it's computed in an automated way to
                 # half the size of db_maxconn because while most requests won't borrow cursors concurrently
                 # there are some exceptions where some controllers might allocate two or more cursors.
-                self.max_http_threads = config['db_maxconn'] // 2
+                self.max_http_threads = max((config['db_maxconn'] - config['max_cron_threads']) // 2, 1)
             self.http_threads_sem = threading.Semaphore(self.max_http_threads)
         super(ThreadedWSGIServerReloadable, self).__init__(host, port, app,
                                                            handler=RequestHandler)
@@ -636,7 +641,8 @@ class GeventServer(CommonServer):
             _logger.warning("Gevent Parent changed: %s", self.pid)
             restart = True
         memory = memory_info(psutil.Process(self.pid))
-        if config['limit_memory_soft'] and memory > config['limit_memory_soft']:
+        limit_memory_soft = config['limit_memory_soft_gevent'] or config['limit_memory_soft']
+        if limit_memory_soft and memory > limit_memory_soft:
             _logger.warning('Gevent virtual memory limit reached: %s', memory)
             restart = True
         if restart:

@@ -16,6 +16,7 @@ import { Component } from "@odoo/owl";
 export const WebsiteSale = publicWidget.Widget.extend(VariantMixin, cartHandlerMixin, {
     selector: '.oe_website_sale',
     events: Object.assign({}, VariantMixin.events || {}, {
+        'change form .js_product:first input[name="add_qty"]': '_onChangeAddQuantity',
         'mouseup .js_publish': '_onMouseupPublish',
         'touchend .js_publish': '_onMouseupPublish',
         'change .oe_cart input.js_quantity[data-product-id]': '_onChangeCartQuantity',
@@ -74,9 +75,22 @@ export const WebsiteSale = publicWidget.Widget.extend(VariantMixin, cartHandlerM
 
         this._startZoom();
 
+        // Triggered when selecting a variant of a product in a carousel element
+        window.addEventListener("hashchange", (ev) => {
+            this._applyHash();
+            this.triggerVariantChange(this.$el);
+        });
+
         // This allows conditional styling for the filmstrip
-        if (isBrowserFirefox() || hasTouch()) {
-            this.el.querySelector('.o_wsale_filmstip_container')?.classList.add('o_wsale_filmstip_fancy_disabled');
+        const filmstripContainer = this.el.querySelector('.o_wsale_filmstip_container');
+        const filmstripContainerWidth = filmstripContainer
+            ? filmstripContainer.getBoundingClientRect().width : 0;
+        const filmstripWrapper = this.el.querySelector('.o_wsale_filmstip_wrapper');
+        const filmstripWrapperWidth = filmstripWrapper
+            ? filmstripWrapper.getBoundingClientRect().width : 0;
+        const isFilmstripScrollable = filmstripWrapperWidth < filmstripContainerWidth
+        if (isBrowserFirefox() || hasTouch() || isFilmstripScrollable) {
+            filmstripContainer?.classList.add('o_wsale_filmstip_fancy_disabled');
         }
 
         this.getRedirectOption();
@@ -261,15 +275,14 @@ export const WebsiteSale = publicWidget.Widget.extend(VariantMixin, cartHandlerM
      * @private
      */
     _startZoom: function () {
-        // Do not activate image zoom on hover for mobile devices
         const salePage = document.querySelector(".o_wsale_product_page");
-        if (!salePage || uiUtils.isSmall() || this._getProductImageWidth() === "none") {
+        if (!salePage || this._getProductImageWidth() === "none") {
             return;
         }
         this._cleanupZoom();
         this.zoomCleanup = [];
-        // Zoom on hover
-        if (salePage.dataset.ecomZoomAuto) {
+        // Zoom on hover (except on mobile)
+        if (salePage.dataset.ecomZoomAuto && !uiUtils.isSmall()) {
             const images = salePage.querySelectorAll("img[data-zoom]");
             for (const image of images) {
                 const $image = $(image);
@@ -442,6 +455,13 @@ export const WebsiteSale = publicWidget.Widget.extend(VariantMixin, cartHandlerM
      */
     _onClickAddCartJSON: function (ev) {
         this.onClickAddCartJSON(ev);
+    },
+    /**
+     * @private
+     * @param {Event} ev
+     */
+    _onChangeAddQuantity: function (ev) {
+        this.onChangeAddQuantity(ev);
     },
     /**
      * @private

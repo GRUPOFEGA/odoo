@@ -158,7 +158,7 @@ class TestGetDiscussChannel(TestImLivechatCommon, MailCommon):
                     "last_interest_dt": fields.Datetime.to_string(visitor_member.last_interest_dt),
                     "last_seen_dt": False,
                     "message_unread_counter": 0,
-                    "message_unread_counter_bus_id": self.env["bus.bus"]._bus_last_id(),
+                    "message_unread_counter_bus_id": self.env["bus.bus"]._bus_last_id() - 1,
                     "new_message_separator": 0,
                     "persona": {"id": test_user.partner_id.id, "type": "partner"},
                     "seen_message_id": False,
@@ -240,7 +240,7 @@ class TestGetDiscussChannel(TestImLivechatCommon, MailCommon):
                     "last_interest_dt": fields.Datetime.to_string(operator_member.last_interest_dt),
                     "last_seen_dt": False,
                     "message_unread_counter": 0,
-                    "message_unread_counter_bus_id": self.env["bus.bus"]._bus_last_id(),
+                    "message_unread_counter_bus_id": self.env["bus.bus"]._bus_last_id() - 1,
                     "new_message_separator": 0,
                     "persona": {"id": operator.partner_id.id, "type": "partner"},
                     "seen_message_id": False,
@@ -293,41 +293,6 @@ class TestGetDiscussChannel(TestImLivechatCommon, MailCommon):
         with freeze_time(fields.Datetime.to_string(fields.Datetime.now() + timedelta(days=1))):
             member_of_operator._gc_unpin_livechat_sessions()
         self.assertTrue(member_of_operator.is_pinned, "unread channel should not be unpinned after autovacuum")
-
-    def test_channel_command_help_in_livechat(self):
-        """Ensures the command '/help' works in a livechat"""
-        data = self.make_jsonrpc_request(
-            "/im_livechat/get_session",
-            {
-                "anonymous_name": "<strong>visitor</strong>",
-                "channel_id": self.livechat_channel.id,
-                "previous_operator_id": self.operators[1].partner_id.id
-            },
-        )
-        channel = self.env["discuss.channel"].browse(data["Thread"][0]["id"])
-        self.env['bus.bus'].sudo().search([]).unlink()
-        with self.assertBus(
-            [(self.env.cr.dbname, "res.partner", self.env.user.partner_id.id)],
-            [
-                {
-                    "type": "discuss.channel/transient_message",
-                    "payload": {
-                        "body":
-                            "<span class='o_mail_notification'>You are in a private conversation with <b>@Paul</b> and <b>@Visitor</b>."
-                            "<br><br>Type <b>@username</b> to mention someone, and grab their attention."
-                            "<br>Type <b>#channel</b> to mention a channel."
-                            "<br>Type <b>/command</b> to execute a command."
-                            "<br>Type <b>:shortcut</b> to insert a canned response in your message."
-                            "</span>",
-                            "thread": {
-                                "model": "discuss.channel",
-                                "id": channel.id,
-                            },
-                    },
-                },
-            ],
-        ):
-            channel.execute_command_help()
 
     def test_only_active_livechats_returned_by_init_messaging(self):
         self.authenticate(None, None)

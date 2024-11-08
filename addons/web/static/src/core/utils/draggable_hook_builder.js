@@ -96,6 +96,7 @@ const DEFAULT_ACCEPTED_PARAMS = {
     edgeScrolling: [Object, Function],
     delay: [Number],
     tolerance: [Number],
+    touchDelay: [Number],
     iframeWindow: [Object, Function],
 };
 const DEFAULT_DEFAULT_PARAMS = {
@@ -398,7 +399,7 @@ function toFunction(value) {
 
 /**
  * @param {DraggableBuilderParams} hookParams
- * @returns {(params: Record<any, any>) => { dragging: boolean }}
+ * @returns {(params: Record<keyof typeof DEFAULT_ACCEPTED_PARAMS, any>) => { dragging: boolean }}
  */
 export function makeDraggableHook(hookParams) {
     hookParams = getReturnValue(hookParams);
@@ -525,7 +526,11 @@ export function makeDraggableHook(hookParams) {
 
                 dom.addClass(document.body, "pe-none", "user-select-none");
                 if (params.iframeWindow) {
-                    dom.addClass(params.iframeWindow.body, "pe-none", "user-select-none");
+                    for (const iframe of document.getElementsByTagName("iframe")) {
+                        if (iframe.contentWindow === params.iframeWindow) {
+                            dom.addClass(iframe, "pe-none", "user-select-none");
+                        }
+                    }
                 }
                 // FIXME: adding pe-none and cursor on the same element makes
                 // no sense as pe-none prevents the cursor to be displayed.
@@ -682,8 +687,12 @@ export function makeDraggableHook(hookParams) {
                 // https://bugzilla.mozilla.org/show_bug.cgi?id=1352061
                 // https://bugzilla.mozilla.org/show_bug.cgi?id=339293
                 safePrevent(ev);
-                if (document.activeElement && !document.activeElement.contains(ev.target)) {
-                    document.activeElement.blur();
+                let activeElement = document.activeElement;
+                while (activeElement?.nodeName === "IFRAME") {
+                    activeElement = activeElement.contentDocument?.activeElement;
+                }
+                if (activeElement && !activeElement.contains(ev.target)) {
+                    activeElement.blur();
                 }
 
                 const { currentTarget, pointerId, target } = ev;
@@ -780,13 +789,13 @@ export function makeDraggableHook(hookParams) {
              */
             const updateElementPosition = () => {
                 const { containerRect, element, elementRect, offset } = ctx.current;
-                const { width: ew } = elementRect;
+                const { width: ew, height: eh } = elementRect;
                 const { x: cx, y: cy, width: cw, height: ch } = containerRect;
 
                 // Updates the position of the dragged element.
                 dom.addStyle(element, {
                     left: `${clamp(ctx.pointer.x - offset.x, cx, cx + cw - ew)}px`,
-                    top: `${clamp(ctx.pointer.y - offset.y, cy, cy + ch)}px`,
+                    top: `${clamp(ctx.pointer.y - offset.y, cy, cy + ch - eh)}px`,
                 });
             };
 
@@ -810,7 +819,7 @@ export function makeDraggableHook(hookParams) {
                 let iframeOffsetX = 0;
                 let iframeOffsetY = 0;
                 const iframeEl = container.ownerDocument.defaultView.frameElement;
-                if (iframeEl && !iframeEl.contentDocument.contains(element)) {
+                if (iframeEl && !iframeEl.contentDocument?.contains(element)) {
                     const { x, y } = dom.getRect(iframeEl);
                     iframeOffsetX = x;
                     iframeOffsetY = y;

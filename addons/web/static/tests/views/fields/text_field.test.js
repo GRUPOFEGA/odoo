@@ -102,7 +102,7 @@ test("set row on text fields", async () => {
 });
 
 test("is translatable", async () => {
-    Product._fields.description = fields.Text({ translate: true });
+    Product._fields.description.translate = true;
     Product._records = [{ id: 1, description: "Description as text" }];
 
     serverState.multiLang = true;
@@ -136,7 +136,7 @@ test("is translatable", async () => {
 });
 
 test("is translatable on new record", async () => {
-    Product._fields.description = fields.Text({ translate: true });
+    Product._fields.description.translate = true;
     Product._records = [{ id: 1, description: "Description as text" }];
 
     serverState.multiLang = true;
@@ -235,4 +235,27 @@ test.tags("mobile")("with dynamic placeholder in mobile", async () => {
     press(["alt", "#"]);
     await animationFrame();
     expect(".o_popover .o_model_field_selector_popover").toHaveCount(1);
+});
+
+test("text field without line breaks", async () => {
+    Product._records = [{ id: 1, description: "Description as text" }];
+    await mountView({
+        type: "form",
+        resModel: "product",
+        resId: 1,
+        arch: `<form><field name="description" options="{'line_breaks': False}"/></form>`,
+    });
+
+    expect(".o_field_text textarea").toHaveCount(1);
+    expect(".o_field_text textarea").toHaveValue("Description as text");
+    await contains(".o_field_text textarea").click();
+    await press("Enter");
+    expect(".o_field_text textarea").toHaveValue("Description as text");
+
+    await contains(".o_field_text textarea").clear({ confirm: false });
+    await navigator.clipboard.writeText("text\nwith\nline\nbreaks\n"); // copy
+    await press(["ctrl", "v"]); // paste
+    expect(".o_field_text textarea").toHaveValue("text with line breaks ", {
+        message: "no line break should appear",
+    });
 });

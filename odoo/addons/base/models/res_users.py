@@ -43,9 +43,22 @@ class CryptContext:
         # deprecated alias
         return self.hash
 
-    @property
     def copy(self):
-        return self.__obj__.copy
+        """
+            The copy method must create a new instance of the
+            ``CryptContext`` wrapper with the same configuration
+            as the original (``__obj__``).
+
+            There are no need to manage the case where kwargs are
+            passed to the ``copy`` method.
+
+            It is necessary to load the original ``CryptContext`` in
+            the new instance of the original ``CryptContext`` with ``load``
+            to get the same configuration.
+        """
+        other_wrapper = CryptContext(_autoload=False)
+        other_wrapper.__obj__.load(self.__obj__)
+        return other_wrapper
 
     @property
     def hash(self):
@@ -335,7 +348,7 @@ class Users(models.Model):
             'image_1024', 'image_512', 'image_256', 'image_128', 'lang', 'tz',
             'tz_offset', 'groups_id', 'partner_id', 'write_date', 'action_id',
             'avatar_1920', 'avatar_1024', 'avatar_512', 'avatar_256', 'avatar_128',
-            'share',
+            'share', 'device_ids',
         ]
 
     @property
@@ -371,6 +384,7 @@ class Users(models.Model):
         help="If specified, this action will be opened at log on for this user, in addition to the standard menu.")
     groups_id = fields.Many2many('res.groups', 'res_groups_users_rel', 'uid', 'gid', string='Groups', default=lambda s: s._default_groups())
     log_ids = fields.One2many('res.users.log', 'create_uid', string='User log entries')
+    device_ids = fields.One2many('res.device', 'user_id', string='User devices')
     login_date = fields.Datetime(related='log_ids.create_date', string='Latest authentication', readonly=False)
     share = fields.Boolean(compute='_compute_share', compute_sudo=True, string='Share User', store=True,
          help="External user with limited access, created only for the purpose of sharing data.")
@@ -466,7 +480,9 @@ class Users(models.Model):
           - { 'uid': 32, 'auth_method': 'webauthn',      'mfa': 'skip'    }
         :rtype: dict
         """
-        assert credential['type'] == 'password' and credential['password']
+        if not (credential['type'] == 'password' and credential['password']):
+            raise AccessDenied()
+
         self.env.cr.execute(
             "SELECT COALESCE(password, '') FROM res_users WHERE id=%s",
             [self.env.user.id]
@@ -582,13 +598,23 @@ class Users(models.Model):
         action_open_website = self.env.ref('base.action_open_website', raise_if_not_found=False)
         if action_open_website and any(user.action_id.id == action_open_website.id for user in self):
             raise ValidationError(_('The "App Switcher" action cannot be selected as home action.'))
-        # Prevent using reload actions.
         # We use sudo() because  "Access rights" admins can't read action models
         for user in self.sudo():
             if user.action_id.type == "ir.actions.client":
+                # Prevent using reload actions.
                 action = self.env["ir.actions.client"].browse(user.action_id.id)  # magic
                 if action.tag == "reload":
                     raise ValidationError(_('The "%s" action cannot be selected as home action.', action.name))
+
+            elif user.action_id.type == "ir.actions.act_window":
+                # Restrict actions that include 'active_id' in their context.
+                action = self.env["ir.actions.act_window"].browse(user.action_id.id)  # magic
+                if not action.context:
+                    continue
+                if "active_id" in action.context:
+                    raise ValidationError(
+                        _('The action "%s" cannot be set as the home action because it requires a record to be selected beforehand.', action.name)
+                    )
 
 
     @api.constrains('groups_id')
@@ -843,7 +869,7 @@ class Users(models.Model):
         if lang not in langs:
             lang = request.best_lang if request else None
             if lang not in langs:
-                lang = self.env.user.company_id.partner_id.lang
+                lang = self.env.user.with_context(prefetch_fields=False).company_id.partner_id.lang
                 if lang not in langs:
                     lang = DEFAULT_LANG
                     if lang not in langs:
@@ -904,7 +930,7 @@ class Users(models.Model):
                         raise AccessDenied()
                     user = user.with_user(user)
                     auth_info = user._check_credentials(credential, user_agent_env)
-                    tz = request.httprequest.cookies.get('tz') if request else None
+                    tz = request.cookies.get('tz') if request else None
                     if tz in pytz.all_timezones and (not user.tz or not user.login_date):
                         # first login or missing tz -> set tz to browser tz
                         user.tz = tz
@@ -1116,6 +1142,7 @@ class Users(models.Model):
 
     def action_revoke_all_devices(self):
         ctx = dict(self.env.context, dialog_size='medium')
+        ctx['default_auth_method'] = 'password'
         return {
             'name': _('Log out from all devices?'),
             'type': 'ir.actions.act_window',
@@ -1166,7 +1193,7 @@ class Users(models.Model):
         the current request is in debug mode.
         """
         self.ensure_one()
-        if not (self.env.su or self == self.env.user or self._has_group('base.group_user')):
+        if not (self.env.su or self == self.env.user or self.env.user._has_group('base.group_user')):
             # this prevents RPC calls from non-internal users to retrieve
             # information about other users
             raise AccessError(_("You can ony call user.has_group() with your current user."))
@@ -2126,11 +2153,12 @@ class CheckIdentity(models.TransientModel):
             self.create_uid._check_credentials(credential, {'interactive': True})
         except AccessDenied:
             raise UserError(_("Incorrect Password, try again or click on Forgot Password to reset your password."))
+        finally:
+            self.password = False
 
     def run_check(self):
         assert request, "This method can only be accessed over HTTP"
         self._check_identity()
-        self.password = False
 
         request.session['identity-check-last'] = time.time()
         ctx, model, ids, method, args, kwargs = json.loads(self.sudo().request)
@@ -2139,8 +2167,9 @@ class CheckIdentity(models.TransientModel):
         return method(*args, **kwargs)
 
     def revoke_all_devices(self):
+        current_password = self.password
         self._check_identity()
-        self.env.user._change_password(self.password)
+        self.env.user._change_password(current_password)
         self.sudo().unlink()
         return {'type': 'ir.actions.client', 'tag': 'reload'}
 
@@ -2328,7 +2357,7 @@ class APIKeys(models.Model):
         raise AccessError(_("You can not remove API keys unless they're yours or you are a system user"))
 
     def _check_credentials(self, *, scope, key):
-        assert scope, "scope is required"
+        assert scope and key, "scope and key required"
         index = key[:INDEX_SIZE]
         self.env.cr.execute('''
             SELECT user_id, key
@@ -2337,7 +2366,7 @@ class APIKeys(models.Model):
         '''.format(self._table),
         [index, scope])
         for user_id, current_key in self.env.cr.fetchall():
-            if KEY_CRYPT_CONTEXT.verify(key, current_key):
+            if key and KEY_CRYPT_CONTEXT.verify(key, current_key):
                 return user_id
 
     def _generate(self, scope, name):

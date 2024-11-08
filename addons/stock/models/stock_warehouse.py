@@ -1076,8 +1076,8 @@ class Warehouse(models.Model):
                 'code': 'internal',
                 'use_create_lots': False,
                 'use_existing_lots': True,
-                'default_location_src_id': input_loc.id,
-                'default_location_dest_id': output_loc.id,
+                'default_location_src_id': self.wh_input_stock_loc_id.id,
+                'default_location_dest_id': self.wh_output_stock_loc_id.id,
                 'sequence': max_sequence + 8,
                 'sequence_code': 'XD',
                 'company_id': self.company_id.id,
@@ -1093,42 +1093,42 @@ class Warehouse(models.Model):
         return {
             'in_type_id': {
                 'name': name + ' ' + _('Sequence in'),
-                'prefix': code + '/IN/', 'padding': 5,
+                'prefix': code + '/' + (self.in_type_id.sequence_code or 'IN') + '/', 'padding': 5,
                 'company_id': self.company_id.id,
             },
             'out_type_id': {
                 'name': name + ' ' + _('Sequence out'),
-                'prefix': code + '/OUT/', 'padding': 5,
+                'prefix': code + '/' + (self.out_type_id.sequence_code or 'OUT') + '/', 'padding': 5,
                 'company_id': self.company_id.id,
             },
             'pack_type_id': {
                 'name': name + ' ' + _('Sequence packing'),
-                'prefix': code + '/PACK/', 'padding': 5,
+                'prefix': code + '/' + (self.pack_type_id.sequence_code or 'PACK') + '/', 'padding': 5,
                 'company_id': self.company_id.id,
             },
             'pick_type_id': {
                 'name': name + ' ' + _('Sequence picking'),
-                'prefix': code + '/PICK/', 'padding': 5,
+                'prefix': code + '/' + (self.pick_type_id.sequence_code or 'PICK') + '/', 'padding': 5,
                 'company_id': self.company_id.id,
             },
             'qc_type_id': {
                 'name': name + ' ' + _('Sequence quality control'),
-                'prefix': code + '/QC/', 'padding': 5,
+                'prefix': code + '/' + (self.qc_type_id.sequence_code or 'QC') + '/', 'padding': 5,
                 'company_id': self.company_id.id,
             },
             'store_type_id': {
                 'name': name + ' ' + _('Sequence storage'),
-                'prefix': code + '/STOR/', 'padding': 5,
+                'prefix': code + '/' + (self.store_type_id.sequence_code or 'STOR') + '/', 'padding': 5,
                 'company_id': self.company_id.id,
             },
             'int_type_id': {
                 'name': name + ' ' + _('Sequence internal'),
-                'prefix': code + '/INT/', 'padding': 5,
+                'prefix': code + '/' + (self.int_type_id.sequence_code or 'INT') + '/', 'padding': 5,
                 'company_id': self.company_id.id,
             },
             'xdock_type_id': {
                 'name': name + ' ' + _('Sequence cross dock'),
-                'prefix': code + '/XD/', 'padding': 5,
+                'prefix': code + '/' + (self.xdock_type_id.sequence_code or 'XD') + '/', 'padding': 5,
                 'company_id': self.company_id.id,
             },
         }

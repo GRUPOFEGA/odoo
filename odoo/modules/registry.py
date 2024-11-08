@@ -109,6 +109,7 @@ class Registry(Mapping):
         t0 = time.time()
         registry = object.__new__(cls)
         registry.init(db_name)
+        registry.new = registry.init = registry.registries = None
 
         # Initializing a registry will call general code which will in
         # turn call Registry() to obtain the registry being initialized.
@@ -137,7 +138,6 @@ class Registry(Mapping):
         registry._init = False
         registry.ready = True
         registry.registry_invalidated = bool(update_module)
-        registry.new = registry.init = registry.registries = None
         registry.signal_changes()
 
         _logger.info("Registry loaded in %.3fs", time.time() - t0)
@@ -964,6 +964,10 @@ class Registry(Mapping):
     def cursor(self, /, readonly=False):
         """ Return a new cursor for the database. The cursor itself may be used
             as a context manager to commit/rollback and close automatically.
+
+            :param readonly: Attempt to acquire a cursor on a replica database.
+                Acquire a read/write cursor on the primary database in case no
+                replica exists or that no readonly cursor could be acquired.
         """
         if self.test_cr is not None:
             # in test mode we use a proxy object that uses 'self.test_cr' underneath
@@ -971,10 +975,15 @@ class Registry(Mapping):
                 _logger.info('Explicitly ignoring readonly flag when generating a cursor')
             return TestCursor(self.test_cr, self.test_lock, readonly and self.test_readonly_enabled)
 
-        connection = self._db
         if readonly and self._db_readonly is not None:
-            connection = self._db_readonly
-        return connection.cursor()
+            try:
+                return self._db_readonly.cursor()
+            except psycopg2.OperationalError:
+                # Setting _db_readonly to None will deactivate the readonly mode until
+                # worker restart / recycling.
+                self._db_readonly = None
+                _logger.warning('Failed to open a readonly cursor, falling back to read-write cursor')
+        return self._db.cursor()
 
 
 class DummyRLock(object):

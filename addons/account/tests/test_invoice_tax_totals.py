@@ -776,7 +776,7 @@ class TestTaxTotals(AccountTestInvoicingCommon):
             'subtotals_order': ["Untaxed Amount"],
         })
 
-    def test_round_globally_price_included_tax(self):
+    def test_round_globally_price_included_tax_1(self):
         self.env.company.tax_calculation_rounding_method = 'round_globally'
         tax_1 = self.env['account.tax'].create({
             'name': "tax_1",
@@ -808,7 +808,7 @@ class TestTaxTotals(AccountTestInvoicingCommon):
             ],
         })
         self.assert_document_tax_totals(invoice, {
-            'amount_total': 43.05,
+            'amount_total': 43.06,
             'amount_untaxed': 33.58,
             'display_tax_base': True,
             'groups_by_subtotal': {
@@ -817,14 +817,14 @@ class TestTaxTotals(AccountTestInvoicingCommon):
                         'tax_group_name': self.tax_group1.name,
                         'tax_group_label': self.tax_group1.pos_receipt_label,
                         'tax_group_amount': 2,
-                        'tax_group_base_amount': 33.59,
+                        'tax_group_base_amount': 33.58,
                         'tax_group_id': self.tax_group1.id,
                     },
                     {
                         'tax_group_name': self.tax_group2.name,
                         'tax_group_label': self.tax_group2.pos_receipt_label,
-                        'tax_group_amount': 7.47,
-                        'tax_group_base_amount': 35.59,
+                        'tax_group_amount': 7.48,
+                        'tax_group_base_amount': 35.58,
                         'tax_group_id': self.tax_group2.id,
                     }
                 ]
@@ -837,6 +837,84 @@ class TestTaxTotals(AccountTestInvoicingCommon):
             ],
             'subtotals_order': ["Untaxed Amount"],
         })
+
+    def test_round_globally_price_included_tax_2(self):
+        self.env.company.tax_calculation_rounding_method = 'round_globally'
+        taxes = self.env['account.tax'].create([
+            {
+                'name': f"tax_6_{i}",
+                'amount_type': 'percent',
+                'tax_group_id': tax_group.id,
+                'amount': 6.0,
+                'price_include': True,
+                'include_base_amount': True,
+                'is_base_affected': False,
+            }
+            for i, tax_group in enumerate(self.tax_group1 + self.tax_group2)
+        ])
+        invoice = self.env['account.move'].create({
+            'move_type': 'out_invoice',
+            'partner_id': self.partner_a.id,
+            'invoice_date': '2019-01-01',
+            'invoice_line_ids': [
+                Command.create({
+                    'name': f'line{i}',
+                    'display_type': 'product',
+                    'price_unit': 21.53,
+                    'tax_ids': [Command.set(taxes.ids)],
+                })
+                for i in range(2)
+            ],
+        })
+        self.assert_document_tax_totals(invoice, {
+            'amount_total': 43.06,
+            'amount_untaxed': 38.46,
+            'display_tax_base': False,
+            'groups_by_subtotal': {
+                'Untaxed Amount': [
+                    {
+                        'tax_group_name': self.tax_group1.name,
+                        'tax_group_label': self.tax_group1.pos_receipt_label,
+                        'tax_group_amount': 2.3000000000000003,
+                        'tax_group_base_amount': 38.46,
+                        'tax_group_id': self.tax_group1.id,
+                    },
+                    {
+                        'tax_group_name': self.tax_group2.name,
+                        'tax_group_label': self.tax_group2.pos_receipt_label,
+                        'tax_group_amount': 2.3000000000000003,
+                        'tax_group_base_amount': 38.46,
+                        'tax_group_id': self.tax_group2.id,
+                    }
+                ]
+            },
+            'subtotals': [
+                {
+                    'name': "Untaxed Amount",
+                    'amount': 38.46,
+                }
+            ],
+            'subtotals_order': ["Untaxed Amount"],
+        })
+
+    def test_round_globally_taxes_base(self):
+        self.env.company.tax_calculation_rounding_method = 'round_globally'
+        tax = self.env['account.tax'].create({
+            'name': '21%',
+            'amount_type': 'percent',
+            'amount': 21.0
+        })
+        invoice = self.env['account.move'].create({
+            'move_type': 'out_invoice',
+            'partner_id': self.partner_a.id,
+            'invoice_line_ids': [Command.create({
+                'price_unit': 5.75,
+                'discount': 18.0,
+                'quantity': 5,
+                'tax_ids': [tax.id],
+            }) for i in range(6)]
+        })
+        self.assertEqual(invoice.currency_id.compare_amounts(invoice.amount_tax, 29.71), 0)
 
     def test_cash_rounding_amount_total_rounded(self):
         tax_15 = self.env['account.tax'].create({
@@ -1156,3 +1234,21 @@ class TestTaxTotals(AccountTestInvoicingCommon):
                 ],
                 'subtotals_order': ["Untaxed Amount"],
             })
+
+    def test_display_tax_base_rounding(self):
+        tax_19 = self.env['account.tax'].create({
+            'name': "tax_19",
+            'amount_type': 'percent',
+            'amount': 19.0,
+        })
+
+        currency = self.setup_other_currency('CLP')
+        self.company_data['company'].currency_id = currency.id
+        self.company_data['company'].tax_calculation_rounding_method = 'round_globally'
+        for amount in (23.0, 23.67):
+            document = self._create_document_for_tax_totals_test([
+                (amount, tax_19),
+            ])
+            document.currency_id = currency.id
+            document.invalidate_model(fnames=['tax_totals'])
+            self.assertFalse(document.tax_totals['display_tax_base'])

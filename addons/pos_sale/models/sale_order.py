@@ -49,6 +49,17 @@ class SaleOrder(models.Model):
             total_pos_paid = sum(sale_order.order_line.filtered(lambda l: not l.display_type).mapped('pos_order_line_ids.price_subtotal_incl'))
             sale_order.amount_unpaid = sale_order.amount_total - (total_invoice_paid + total_pos_paid)
 
+    @api.depends('order_line.pos_order_line_ids')
+    def _compute_amount_to_invoice(self):
+        super()._compute_amount_to_invoice()
+        for order in self:
+            if order.invoice_status == 'invoiced':
+                continue
+            # We need to account for the downpayment paid in POS with and without invoice
+            order_amount = sum(order.pos_order_line_ids.filtered(lambda pol: pol.sale_order_line_id.is_downpayment).mapped('price_subtotal_incl'))
+            order.amount_to_invoice -= order_amount
+
+
 class SaleOrderLine(models.Model):
     _name = 'sale.order.line'
     _inherit = ['sale.order.line', 'pos.load.mixin']
@@ -62,7 +73,7 @@ class SaleOrderLine(models.Model):
     @api.model
     def _load_pos_data_fields(self, config_id):
         return ['discount', 'display_name', 'price_total', 'price_unit', 'product_id', 'product_uom_qty', 'qty_delivered',
-            'qty_invoiced', 'qty_to_invoice', 'display_type', 'name', 'tax_id']
+            'qty_invoiced', 'qty_to_invoice', 'display_type', 'name', 'tax_id', 'is_downpayment']
 
     @api.depends('pos_order_line_ids.qty')
     def _compute_qty_delivered(self):
@@ -77,13 +88,13 @@ class SaleOrderLine(models.Model):
             sale_line.qty_invoiced += sum([self._convert_qty(sale_line, pos_line.qty, 'p2s') for pos_line in sale_line.pos_order_line_ids], 0)
 
     def _get_sale_order_fields(self):
-        return ["product_id", "display_name", "price_unit", "product_uom_qty", "tax_id", "qty_delivered", "qty_invoiced", "discount", "qty_to_invoice", "price_total"]
+        return ["product_id", "display_name", "price_unit", "product_uom_qty", "tax_id", "qty_delivered", "qty_invoiced", "discount", "qty_to_invoice", "price_total", "is_downpayment"]
 
     def read_converted(self):
         field_names = self._get_sale_order_fields()
         results = []
         for sale_line in self:
-            if sale_line.product_type:
+            if sale_line.product_type or (sale_line.is_downpayment and sale_line.price_unit != 0):
                 product_uom = sale_line.product_id.uom_id
                 sale_line_uom = sale_line.product_uom
                 item = sale_line.read(field_names, load=False)[0]

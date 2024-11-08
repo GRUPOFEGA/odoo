@@ -58,6 +58,17 @@ export class ChannelMember extends Record {
             }
         },
     });
+    unreadSynced = Record.attr(true, {
+        compute() {
+            return this.localNewMessageSeparator === this.new_message_separator;
+        },
+        onUpdate() {
+            if (this.unreadSynced) {
+                this.hideUnreadBanner = false;
+            }
+        },
+    });
+    hideUnreadBanner = false;
     localMessageUnreadCounter = 0;
     localNewMessageSeparator = null;
     message_unread_counter = 0;
@@ -109,6 +120,14 @@ export class ChannelMember extends Record {
                   locale: pyToJsLocale(user.lang),
               })
             : undefined;
+    }
+
+    get totalUnreadMessageCounter() {
+        let counter = this.message_unread_counter;
+        if (!this.unreadSynced) {
+            counter += this.localMessageUnreadCounter;
+        }
+        return counter;
     }
 }
 

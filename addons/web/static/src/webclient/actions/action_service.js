@@ -214,31 +214,13 @@ export function makeActionManager(env, router = _router) {
         if (state.action && state.resId && controllers.at(-1)?.action?.id === state.action) {
             // When loading the state on a form view, we will need to load the action for it,
             // and this will give us the display name of the corresponding multi-record view in
-            // the breadcrumb. By calling _loadAction preemptively, we can in some cases avoid
+            // the breadcrumb.
+            // By marking the last controller as a lazyController, we can in some cases avoid
             // _loadBreadcrumbs from doing any network request as the breadcrumbs may only contain
             // the form view and the multi-record view.
-            const { actionRequest, options } = _getActionParams();
-            const [bcControllers, action] = await Promise.all([
-                _loadBreadcrumbs(controllers.slice(0, -1)),
-                _loadAction(actionRequest, options.additionalContext).then((action) =>
-                    _preprocessAction(action, options.additionalContext)
-                ),
-            ]);
-
-            // If the current action is a Window action and has a multi-record view, we add the last
-            // controller to the breadcrumb controllers.
-            if (
-                action.type === "ir.actions.act_window" &&
-                action.views.some((view) => view[1] !== "form" && view[1] !== "search")
-            ) {
-                controllers.at(-1).displayName = action.display_name || action.name || "";
-                controllers.at(-1).action = action;
-                return [...bcControllers, controllers.at(-1)];
-            }
-
-            // If the current action doesn't have a multi-record view, or is not a Window action,
-            // we don't need to add the last controller to the breadcrumb controllers
-            return bcControllers;
+            const bcControllers = await _loadBreadcrumbs(controllers.slice(0, -1));
+            controllers.at(-1).lazy = true;
+            return [...bcControllers, controllers.at(-1)];
         }
         return _loadBreadcrumbs(controllers);
     }
@@ -509,7 +491,7 @@ export function makeActionManager(env, router = _router) {
                     type: "ir.actions.act_window",
                     views: [[state.view_id ? state.view_id : false, "form"]],
                 };
-            } else if (state.view_type) {
+            } else {
                 // This is a window action on a multi-record view => restores it from
                 // the session storage
                 const storedAction = browser.sessionStorage.getItem("current_action");
@@ -651,18 +633,6 @@ export function makeActionManager(env, router = _router) {
                 }
             },
         });
-        const currentState = {
-            resId: viewProps.resId,
-            active_id: action.context.active_id || false,
-        };
-        viewProps.updateActionState = (controller, patchState) => {
-            const oldState = { ...currentState };
-            Object.assign(currentState, patchState);
-            const changed = !shallowEqual(currentState, oldState);
-            if (changed && target !== "new" && controller.isMounted) {
-                pushState();
-            }
-        };
         if (view.type === "form") {
             if (target === "new") {
                 viewProps.mode = "edit";
@@ -702,6 +672,19 @@ export function makeActionManager(env, router = _router) {
         if (!viewProps.resId) {
             viewProps.resId = action.res_id || false;
         }
+
+        const currentState = {
+            resId: viewProps.resId,
+            active_id: action.context.active_id || false,
+        };
+        viewProps.updateActionState = (controller, patchState) => {
+            const oldState = { ...currentState };
+            Object.assign(currentState, patchState);
+            const changed = !shallowEqual(currentState, oldState);
+            if (changed && target !== "new" && controller.isMounted) {
+                pushState();
+            }
+        };
 
         viewProps.noBreadcrumbs =
             "no_breadcrumbs" in action.context ? action.context.no_breadcrumbs : target === "new";
@@ -839,6 +822,12 @@ export function makeActionManager(env, router = _router) {
                 useDebugCategory("action", { action });
                 useChildSubEnv({
                     config: controller.config,
+                    pushStateBeforeReload: () => {
+                        if (this.isMounted) {
+                            return;
+                        }
+                        pushState(nextStack);
+                    },
                 });
                 if (action.target !== "new") {
                     this.__beforeLeave__ = new CallbackRecorder();
@@ -883,6 +872,10 @@ export function makeActionManager(env, router = _router) {
                     // so go back to the previous controller, of the current faulty one.
                     // This occurs when clicking on a breadcrumbs.
                     return restore(controllerStack[index - 1].jsId);
+                }
+                if (index === 0) {
+                    // No previous controller to restore, so do nothing but display the error
+                    return;
                 }
                 const lastController = controllerStack.at(-1);
                 if (lastController) {
@@ -1125,6 +1118,25 @@ export function makeActionManager(env, router = _router) {
             ..._getViewInfo(view, action, views, options.props),
         };
         action.controllers[view.type] = controller;
+
+        const newStackLastController = options.newStack?.at(-1);
+        if (newStackLastController?.lazy) {
+            const multiView = action.views.find(
+                (view) => view[1] !== "form" && view[1] !== "search"
+            );
+            if (multiView) {
+                // If the current action has a multi-record view, we add the last
+                // controller to the breadcrumb controllers.
+                delete newStackLastController.lazy;
+                newStackLastController.displayName = action.display_name || action.name || "";
+                newStackLastController.action = action;
+                newStackLastController.props.type = multiView[1];
+            } else {
+                // If the current action doesn't have a multi-record view,
+                // we don't need to add the last controller to the breadcrumb controllers
+                options.newStack.splice(-1);
+            }
+        }
 
         return _updateUI(controller, options);
     }
@@ -1515,7 +1527,7 @@ export function makeActionManager(env, router = _router) {
                 throw new Error("Attempted to restore a virtual controller whose state is invalid");
             }
             const { actionRequest, options } = actionParams;
-            options.index = index;
+            controllerStack = controllerStack.slice(0, index);
             return doAction(actionRequest, options);
         }
         if (controller.action.type === "ir.actions.act_window") {
@@ -1542,17 +1554,22 @@ export function makeActionManager(env, router = _router) {
         if (actionParams) {
             // Params valid => performs a "doAction"
             const { actionRequest, options } = actionParams;
-            options.newStack = newStack;
+            if (options.index) {
+                options.newStack = newStack.slice(0, options.index);
+                delete options.index;
+            } else {
+                options.newStack = newStack;
+            }
             await doAction(actionRequest, options);
             return true;
         }
     }
 
-    function pushState() {
-        if (!controllerStack.length) {
+    function pushState(cStack = controllerStack) {
+        if (!cStack.length) {
             return;
         }
-        const actions = controllerStack.map((controller) => {
+        const actions = cStack.map((controller) => {
             const { action, props, displayName } = controller;
             const actionState = { displayName };
             if (action.path || action.id) {
@@ -1585,7 +1602,7 @@ export function makeActionManager(env, router = _router) {
             actionStack: actions,
         };
         const stateKeys = [...PATH_KEYS];
-        const { action, props, currentState } = controllerStack.at(-1);
+        const { action, props, currentState } = cStack.at(-1);
         if (props.type !== "form" && props.type !== action.views?.[0][1]) {
             // add view_type only when it's not already known implicitly
             stateKeys.push("view_type");
@@ -1595,7 +1612,7 @@ export function makeActionManager(env, router = _router) {
         }
         Object.assign(newState, pick(newState.actionStack.at(-1), ...stateKeys));
 
-        controllerStack.at(-1).state = newState;
+        cStack.at(-1).state = newState;
         router.pushState(newState, { replace: true });
     }
     return {

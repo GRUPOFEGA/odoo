@@ -43,12 +43,12 @@ patch(PosStore.prototype, {
             "get_tables_order_count_and_printing_changes",
             [this.config.id]
         );
-        this.ws_syncTableCount(result);
+        this.ws_syncTableCount({ order_count: result, table_ids: [] });
         this.bus.subscribe("TABLE_ORDER_COUNT", this.ws_syncTableCount.bind(this));
     },
     // using the same floorplan.
     async ws_syncTableCount(data) {
-        const missingTable = data.find(
+        const missingTable = data["order_count"].find(
             (table) => !(table.id in this.models["restaurant.table"].getAllBy("id"))
         );
 
@@ -60,9 +60,32 @@ patch(PosStore.prototype, {
             const table_ids = response.map((floor) => floor.raw.table_ids).flat();
             await this.data.read("restaurant.table", table_ids);
         }
-
         const tableByIds = this.models["restaurant.table"].getAllBy("id");
-        for (const table of data) {
+        const tables = data["table_ids"].map((id) => this.models["restaurant.table"].get(id));
+        const draftTableOrders = [
+            ...new Set(
+                tables
+                    .map((t) => t["<-pos.order.table_id"])
+                    .flat()
+                    .filter((o) => !o.finalized && typeof o.id === "number")
+            ),
+        ];
+        await this.loadServerOrders([
+            "|",
+
+            // draft table orders in the server
+            ["state", "=", "draft"],
+
+            // draft table orders in client but paid in the server
+            "&",
+            ["state", "in", ["paid", "invoiced"]],
+            ["id", "in", draftTableOrders.map((t) => t.id)],
+
+            ["config_id", "in", [...this.config.raw.trusted_config_ids, this.config.id]],
+            ["table_id", "in", data["table_ids"]],
+            ["session_id", "=", odoo.pos_session_id],
+        ]);
+        for (const table of data["order_count"]) {
             tableByIds[table.id].uiState.changeCount = table.changes;
             tableByIds[table.id].uiState.orderCount = table.orders;
             tableByIds[table.id].uiState.skipCount = table.skip_changes;
@@ -75,16 +98,14 @@ patch(PosStore.prototype, {
             const categories =
                 this.models["product.product"].get(curr.product_id)?.pos_categ_ids || [];
 
-            for (const category of categories) {
-                if (category) {
-                    if (!acc[category.id]) {
-                        acc[category.id] = {
-                            count: curr.quantity,
-                            name: category.name,
-                        };
-                    } else {
-                        acc[category.id].count += curr.quantity;
-                    }
+            for (const category of categories.slice(0, 1)) {
+                if (!acc[category.id]) {
+                    acc[category.id] = {
+                        count: curr.quantity,
+                        name: category.name,
+                    };
+                } else {
+                    acc[category.id].count += curr.quantity;
                 }
             }
 
@@ -203,8 +224,9 @@ patch(PosStore.prototype, {
         this.addPendingOrder([order.id]);
         return order;
     },
-    getSyncAllOrdersContext(orders) {
+    getSyncAllOrdersContext(orders, options = {}) {
         const context = super.getSyncAllOrdersContext(...arguments);
+        context["cancel_table_notification"] = options["cancel_table_notification"] || false;
         if (this.config.module_pos_restaurant && this.selectedTable) {
             context["table_ids"] = [this.selectedTable.id];
             context["force"] = true;
@@ -263,7 +285,15 @@ patch(PosStore.prototype, {
             await this.syncAllOrders();
         } finally {
             this.loadingOrderState = false;
-            let currentOrder = this.getTableOrders(table.id).find((order) =>
+
+            const tableOrders = this.models["pos.order"].filter(
+                (o) =>
+                    o.table_id?.id === table.id &&
+                    // Include the orders that are in tipping state.
+                    (!o.finalized || o.uiState.screen_data?.value?.name === "TipScreen")
+            );
+
+            let currentOrder = tableOrders.find((order) =>
                 orderUuid ? order.uuid === orderUuid : !order.finalized
             );
 
@@ -287,6 +317,9 @@ patch(PosStore.prototype, {
     async setTableFromUi(table, orderUuid = null) {
         try {
             this.tableSyncing = true;
+            if (table.parent_id) {
+                table = table.getParent();
+            }
             await this.setTable(table, orderUuid);
         } catch (e) {
             if (!(e instanceof ConnectionLostError)) {
@@ -345,7 +378,7 @@ patch(PosStore.prototype, {
         this.alert.dismiss();
         if (destinationTable.id === originalTable?.id) {
             this.set_order(order);
-            this.setTable(destinationTable);
+            await this.setTable(destinationTable);
             return;
         }
         if (!this.tableHasOrders(destinationTable)) {

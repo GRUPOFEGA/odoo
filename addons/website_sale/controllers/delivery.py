@@ -140,7 +140,7 @@ class Delivery(WebsiteSale):
         """
         order_sudo = request.website.sale_get_order()
         if request.geoip.country_code:
-            country = self.env['res.country'].search(
+            country = request.env['res.country'].search(
                 [('code', '=', request.geoip.country_code)], limit=1,
             )
         else:
@@ -160,6 +160,8 @@ class Delivery(WebsiteSale):
         :rtype: dict
         """
         order_sudo = request.website.sale_get_order()
+        if not order_sudo:
+            return []
 
         self._include_country_and_state_in_address(partial_delivery_address)
         partial_delivery_address, _side_values = self._parse_form_data(partial_delivery_address)

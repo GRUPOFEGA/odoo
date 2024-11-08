@@ -5,6 +5,7 @@ import {
     addGlobalFilter,
     setCellContent,
     setCellFormat,
+    setCellStyle,
     setGlobalFilterValue,
 } from "@spreadsheet/../tests/helpers/commands";
 import { defineSpreadsheetModels } from "@spreadsheet/../tests/helpers/data";
@@ -18,6 +19,7 @@ import { OdooPivot, OdooPivotRuntimeDefinition } from "@spreadsheet/pivot/odoo_p
 const { pivotRegistry } = registries;
 
 import { getMenuServerData } from "@spreadsheet/../tests/links/menu_data_utils";
+import { createSpreadsheetWithList } from "../helpers/list";
 
 describe.current.tags("headless");
 defineSpreadsheetModels();
@@ -247,4 +249,33 @@ test("odoo links are replaced with their label", async function () {
     expect(frozenData.sheets[0].cells.A3.content).toBe("odoo_view");
     expect(frozenData.sheets[0].cells.A4.content).toBe("[external_link](https://odoo.com)");
     expect(frozenData.sheets[0].cells.A5.content).toBe("[internal_link](o-spreadsheet://Sheet1)");
+});
+
+test("spilled pivot table", async function () {
+    const { model } = await createSpreadsheetWithPivot({
+        arch: /* xml */ `
+          <pivot>
+              <field name="probability" type="measure"/>
+          </pivot>
+        `,
+    });
+    setCellContent(model, "A10", "=PIVOT(1)");
+    setCellStyle(model, "B12", { bold: true });
+    const data = await freezeOdooData(model);
+    const cells = data.sheets[0].cells;
+    expect(cells.A10.content).toBe("(#1) Partner Pivot");
+    expect(cells.A11.content).toBe("");
+    expect(cells.A12.content).toBe("Total");
+    expect(cells.B10.content).toBe("Total");
+    expect(cells.B11.content).toBe("Probability");
+    expect(cells.B12.content).toBe("131");
+    expect(data.formats[cells.B12.format]).toBe("#,##0.00");
+    expect(data.pivots).toEqual({});
+    expect(data.styles[cells.B12.style]).toEqual({ bold: true }, { message: "style is preserved" });
+});
+
+test("Lists are purged from the frozen data", async function () {
+    const { model } = await createSpreadsheetWithList();
+    const data = await freezeOdooData(model);
+    expect(data.lists).toEqual({});
 });

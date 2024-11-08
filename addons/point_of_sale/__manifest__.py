@@ -78,6 +78,7 @@
             'point_of_sale/static/src/app/utils/hooks.js',
         ],
         'web.assets_tests': [
+            'barcodes/static/tests/helpers.js',
             'point_of_sale/static/tests/tours/**/*',
         ],
 
@@ -119,13 +120,13 @@
             'web/static/lib/luxon/luxon.js',
             'web/static/lib/owl/owl.js',
             'web/static/lib/owl/odoo_module.js',
-            'web_editor/static/lib/html2canvas.js',
             'web/static/lib/zxing-library/zxing-library.js',
 
 
             ('include', 'point_of_sale.base_app'),
 
             'web/static/src/core/colorlist/colorlist.scss',
+            'web/static/src/webclient/webclient_layout.scss',
 
             'web/static/src/webclient/icons.scss',
 
@@ -266,6 +267,9 @@
         'point_of_sale.customer_display_assets_test': [
             ('include', 'point_of_sale.base_tests'),
             "point_of_sale/static/tests/tours/**/*",
+            "barcodes/static/tests/helpers.js",
+            "web/static/tests/legacy/helpers/utils.js",
+            "web/static/tests/legacy/helpers/cleanup.js",
         ],
     },
     'license': 'LGPL-3',

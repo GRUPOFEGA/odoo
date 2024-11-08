@@ -59,6 +59,10 @@ class AccountMove(models.Model):
             vat = rec.partner_id.vat
             country_id = rec.partner_id.country_id
             latam_document_type_code = rec.l10n_latam_document_type_id.code
+            if (rec.journal_id.type == 'purchase' and tax_payer_type == '4' and country_id.code != 'CL' and
+                latam_document_type_code == '61' and
+               '46' in rec.l10n_cl_reference_ids.mapped('l10n_cl_reference_doc_type_selection')):
+                continue
             if (not tax_payer_type or not vat) and (country_id.code == "CL" and latam_document_type_code
                                                   and latam_document_type_code not in ['35', '38', '39', '41']):
                 raise ValidationError(_('Tax payer type and vat number are mandatory for this type of '
@@ -260,7 +264,6 @@ class AccountMove(models.Model):
         :return:
         """
         self.ensure_one()
-        cid = self.company_id.id
         tax = [{'tax_code': line.tax_line_id.l10n_cl_sii_code,
                 'tax_name': line.tax_line_id.name,
                 'tax_base': abs(sum(self.invoice_line_ids.filtered(
@@ -269,8 +272,8 @@ class AccountMove(models.Model):
                 'tax_percent': abs(line.tax_line_id.amount),
                 'tax_amount_currency': self.currency_id.round(abs(line.amount_currency)),
                 'tax_amount': self.currency_id.round(abs(line.balance))} for line in self.line_ids.filtered(
-            lambda x: x.tax_group_id.id in [self.env.ref(f'account.{cid}_tax_group_ila').id,
-                                            self.env.ref(f'account.{cid}_tax_group_retenciones').id])]
+            lambda x: x.tax_group_id.id in [self.env['account.chart.template'].with_company(self.company_id).ref('tax_group_ila').id,
+                                            self.env['account.chart.template'].with_company(self.company_id).ref('tax_group_retenciones').id])]
         return tax
 
     def _float_repr_float_round(self, value, decimal_places):

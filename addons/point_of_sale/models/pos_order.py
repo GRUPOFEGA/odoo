@@ -8,7 +8,6 @@ from collections import defaultdict
 
 import psycopg2
 import pytz
-import re
 
 from odoo import api, fields, models, tools, _
 from odoo.tools import float_is_zero, float_round, float_repr, float_compare
@@ -106,7 +105,12 @@ class PosOrder(models.Model):
         combo_child_uuids_by_parent_uuid = self._prepare_combo_line_uuids(order)
 
         if not existing_order:
-            pos_order = self.create(order)
+            if order.get('state'):
+                order['state'] = 'draft'
+            pos_order = self.create({
+                **{key: value for key, value in order.items() if key != 'name'},
+                'pos_reference': order.get('name')
+            })
             pos_order = pos_order.with_company(pos_order.company_id)
         else:
             pos_order = self.env['pos.order'].browse(order.get('id'))
@@ -181,7 +185,7 @@ class PosOrder(models.Model):
         prec_acc = order.currency_id.decimal_places
 
         # Recompute amount paid because we don't trust the client
-        order.amount_paid = sum(order.payment_ids.mapped('amount'))
+        order.with_context(backend_recomputation=True).write({'amount_paid': sum(order.payment_ids.mapped('amount'))})
 
         if not draft and not float_is_zero(pos_order['amount_return'], prec_acc):
             cash_payment_method = pos_session.payment_method_ids.filtered('is_cash_count')[:1]
@@ -465,7 +469,7 @@ class PosOrder(models.Model):
     @api.model
     def _complete_values_from_session(self, session, values):
         if values.get('state') and values['state'] == 'paid' and not values.get('name'):
-            values['name'] = self._compute_order_name()
+            values['name'] = self._compute_order_name(session)
         values.setdefault('pricelist_id', session.config_id.pricelist_id.id)
         values.setdefault('fiscal_position_id', session.config_id.default_fiscal_position_id.id)
         values.setdefault('company_id', session.config_id.company_id.id)
@@ -480,11 +484,12 @@ class PosOrder(models.Model):
                         country=order.partner_id.country_id or self.env.company.country_id)
         return super(PosOrder, self).write(vals)
 
-    def _compute_order_name(self):
+    def _compute_order_name(self, session=None):
+        session = session or self.session_id
         if self.refunded_order_id.exists():
             return self.refunded_order_id.name + _(' REFUND')
         else:
-            return self.session_id.config_id.sequence_id._next()
+            return session.config_id.sequence_id._next()
 
     def action_stock_picking(self):
         self.ensure_one()
@@ -932,6 +937,7 @@ class PosOrder(models.Model):
         :Returns: list -- list of db-ids for the created and updated orders.
         """
         order_ids = []
+        session_ids = set({order.get('session_id') for order in orders})
         for order in orders:
             existing_draft_order = self.env["pos.order"].search(
                 ['&', ('id', '=', order.get('id', False)), ('state', '=', 'draft')], limit=1) if isinstance(order.get('id'), int) else False
@@ -949,8 +955,15 @@ class PosOrder(models.Model):
         # Sometime pos_orders_ids can be empty.
         pos_order_ids = self.env['pos.order'].browse(order_ids)
         config_id = pos_order_ids[0].config_id.id if pos_order_ids else False
+
+        for order in pos_order_ids:
+            order._ensure_access_token()
+
+        # If the previous session is closed, the order will get a new session_id due to _get_valid_session in _process_order
+        is_rescue_session = any(order.get('session_id') not in session_ids for order in orders)
         return {
             'pos.order': pos_order_ids.read(pos_order_ids._load_pos_data_fields(config_id), load=False) if config_id else [],
+            'pos.session': pos_order_ids.session_id._load_pos_data({})['data'] if config_id and is_rescue_session else [],
             'pos.payment': pos_order_ids.payment_ids.read(pos_order_ids.payment_ids._load_pos_data_fields(config_id), load=False) if config_id else [],
             'pos.order.line': pos_order_ids.lines.read(pos_order_ids.lines._load_pos_data_fields(config_id), load=False) if config_id else [],
             'pos.pack.operation.lot': pos_order_ids.lines.pack_lot_ids.read(pos_order_ids.lines.pack_lot_ids._load_pos_data_fields(config_id), load=False) if config_id else [],
@@ -1191,9 +1204,9 @@ class PosOrderLine(models.Model):
     price_unit = fields.Float(string='Unit Price', digits=0)
     qty = fields.Float('Quantity', digits='Product Unit of Measure', default=1)
     price_subtotal = fields.Float(string='Tax Excl.', digits=0,
-        readonly=True, store=True, compute='_compute_amount_line_all')
+        readonly=True, required=True)
     price_subtotal_incl = fields.Float(string='Tax Incl.', digits=0,
-        readonly=True, store=True, compute='_compute_amount_line_all')
+        readonly=True, required=True)
     price_extra = fields.Float(string="Price extra")
     price_type = fields.Selection([
         ('original', 'Original'),
@@ -1310,15 +1323,22 @@ class PosOrderLine(models.Model):
         if self.filtered(lambda x: x.order_id.state not in ["draft", "cancel"]):
             raise UserError(_("You can only unlink PoS order lines that are related to orders in new or cancelled state."))
 
-    @api.depends('price_unit', 'tax_ids', 'qty', 'discount', 'product_id')
+    @api.onchange('price_unit', 'tax_ids', 'qty', 'discount', 'product_id')
+    def _onchange_amount_line_all(self):
+        for line in self:
+            res = line._compute_amount_line_all()
+            line.update(res)
+
     def _compute_amount_line_all(self):
-        for orderline in self:
-            fpos = orderline.order_id.fiscal_position_id
-            tax_ids_after_fiscal_position = fpos.map_tax(orderline.tax_ids)
-            price = orderline.price_unit * (1 - (orderline.discount or 0.0) / 100.0)
-            taxes = tax_ids_after_fiscal_position.compute_all(price, orderline.order_id.currency_id, orderline.qty, product=orderline.product_id, partner=orderline.order_id.partner_id)
-            orderline.price_subtotal_incl = taxes['total_included']
-            orderline.price_subtotal = taxes['total_excluded']
+        self.ensure_one()
+        fpos = self.order_id.fiscal_position_id
+        tax_ids_after_fiscal_position = fpos.map_tax(self.tax_ids)
+        price = self.price_unit * (1 - (self.discount or 0.0) / 100.0)
+        taxes = tax_ids_after_fiscal_position.compute_all(price, self.order_id.currency_id, self.qty, product=self.product_id, partner=self.order_id.partner_id)
+        return {
+            'price_subtotal_incl': taxes['total_included'],
+            'price_subtotal': taxes['total_excluded'],
+        }
 
     @api.onchange('product_id')
     def _onchange_product_id(self):
@@ -1417,9 +1437,9 @@ class PosOrderLine(models.Model):
             pickings_to_confirm = order.picking_ids
             if pickings_to_confirm:
                 # Trigger the Scheduler for Pickings
-                pickings_to_confirm.action_confirm()
                 tracked_lines = order.lines.filtered(lambda l: l.product_id.tracking != 'none')
                 lines_by_tracked_product = groupby(sorted(tracked_lines, key=lambda l: l.product_id.id), key=lambda l: l.product_id.id)
+                pickings_to_confirm.action_confirm()
                 for product_id, lines in lines_by_tracked_product:
                     lines = self.env['pos.order.line'].concat(*lines)
                     moves = pickings_to_confirm.move_ids.filtered(lambda m: m.product_id.id == product_id)
@@ -1459,8 +1479,12 @@ class PosOrderLine(models.Model):
     @api.depends('price_subtotal', 'total_cost')
     def _compute_margin(self):
         for line in self:
-            line.margin = line.price_subtotal - line.total_cost
-            line.margin_percent = not float_is_zero(line.price_subtotal, precision_rounding=line.currency_id.rounding) and line.margin / line.price_subtotal or 0
+            if line.product_id.type == 'combo':
+                line.margin = 0
+                line.margin_percent = 0
+            else:
+                line.margin = line.price_subtotal - line.total_cost
+                line.margin_percent = not float_is_zero(line.price_subtotal, precision_rounding=line.currency_id.rounding) and line.margin / line.price_subtotal or 0
 
     def _prepare_tax_base_line_values(self, sign=1):
         """ Convert pos order lines into dictionaries that would be used to compute taxes later.
@@ -1488,10 +1512,7 @@ class PosOrderLine(models.Model):
             product_name = line.product_id\
                 .with_context(lang=line.order_id.partner_id.lang or self.env.user.lang)\
                 .get_product_multiline_description_sale()
-            if line.product_id.display_name:
-                product_name = re.sub(re.escape(line.product_id.display_name), '', product_name)
-                product_name = re.sub(r'^\n', '', product_name)
-                product_name = re.sub(r'(?<=\n) ', '', product_name)
+
             base_line_vals_list.append(
                 {
                     **self.env['account.tax']._convert_to_tax_base_line_dict(
@@ -1512,6 +1533,11 @@ class PosOrderLine(models.Model):
                 }
             )
         return base_line_vals_list
+
+    def _get_discount_amount(self):
+        self.ensure_one()
+        original_price = self.tax_ids.compute_all(self.price_unit, self.currency_id, self.qty, product=self.product_id, partner=self.order_id.partner_id)['total_included']
+        return original_price - self.price_subtotal_incl
 
 
 class PosOrderLineLot(models.Model):

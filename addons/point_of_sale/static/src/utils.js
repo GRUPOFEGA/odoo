@@ -1,4 +1,4 @@
-import { formatDateTime, parseDateTime } from "@web/core/l10n/dates";
+import { parseDateTime } from "@web/core/l10n/dates";
 
 /*
  * comes from o_spreadsheet.js
@@ -41,7 +41,7 @@ export function constructFullProductName(line) {
                         cus.custom_product_template_attribute_value_id?.id == parseInt(value.id)
                 );
                 if (customValue) {
-                    attributeString += `${value.attribute_id.name}: ${customValue.custom_value}, `;
+                    attributeString += `${value.attribute_id.name}: ${value.name}: ${customValue.custom_value}, `;
                 }
             } else {
                 attributeString += `${value.name}, `;
@@ -120,14 +120,6 @@ export function loadAllImages(el) {
     const images = el.querySelectorAll("img");
     return Promise.all(Array.from(images).map((img) => loadImage(img.src)));
 }
-
-export function getUTCString(datetimeObj) {
-    return formatDateTime(datetimeObj, {
-        format: "yyyy-MM-dd HH:mm:ss",
-        tz: "utc",
-    });
-}
-
 export function parseUTCString(utcStr) {
     return parseDateTime(utcStr, { format: "yyyy-MM-dd HH:mm:ss", tz: "utc" });
 }

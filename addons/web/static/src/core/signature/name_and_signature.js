@@ -23,6 +23,7 @@ export class NameAndSignature extends Component {
         signatureType: { type: String, optional: true },
         noInputName: { type: Boolean, optional: true },
         mode: { type: String, optional: true },
+        onSignatureChange: { type: Function, optional: true },
     };
     static defaultProps = {
         defaultFont: "",
@@ -30,6 +31,7 @@ export class NameAndSignature extends Component {
         fontColor: "DarkBlue",
         signatureType: "signature",
         noInputName: false,
+        onSignatureChange: () => {},
     };
 
     setup() {
@@ -77,6 +79,7 @@ export class NameAndSignature extends Component {
                     });
                     this.signaturePad.addEventListener("endStroke", () => {
                         this.props.signature.isSignatureEmpty = this.isSignatureEmpty;
+                        this.props.onSignatureChange(this.state.signMode);
                     });
                     this.resetSignature();
                     this.props.signature.getSignatureImage = () => this.signaturePad.toDataURL();
@@ -113,14 +116,6 @@ export class NameAndSignature extends Component {
      */
     clear() {
         this.signaturePad.clear();
-        this.props.signature.isSignatureEmpty = this.isSignatureEmpty;
-    }
-
-    /**
-     * Load a base64 encoded image, as dataURL, into the signature field.
-     */
-    async fromDataURL() {
-        await this.signaturePad.fromDataURL(...arguments);
         this.props.signature.isSignatureEmpty = this.isSignatureEmpty;
     }
 
@@ -211,6 +206,7 @@ export class NameAndSignature extends Component {
 
     onClickSignDrawClear() {
         this.clear();
+        this.props.onSignatureChange(this.state.signMode);
     }
 
     onClickSignLoad() {
@@ -245,14 +241,23 @@ export class NameAndSignature extends Component {
      */
     async printImage(imgSrc) {
         this.clear();
-        // Force the width and height to the canvas size to prevent shrinking
-        // high DPI screens (devicePixelRatio > 1)
-        const options = {
-            width: this.signatureRef.el.width,
-            height: this.signatureRef.el.height,
-            yOffset: 30,
+        const c = this.signaturePad.canvas;
+        const img = new Image();
+        img.onload = () => {
+            const ctx = c.getContext("2d");
+            var ratio = ((img.width / img.height) > (c.width / c.height)) ? c.width / img.width : c.height / img.height;
+            ctx.drawImage( 
+                img,
+                (c.width / 2) - (img.width * ratio / 2),
+                (c.height / 2) - (img.height * ratio / 2)
+                , img.width * ratio
+                , img.height * ratio
+            );
+            this.props.signature.isSignatureEmpty = this.isSignatureEmpty;
+            this.props.onSignatureChange(this.state.signMode);
         };
-        await this.fromDataURL(imgSrc, options);
+        img.src = imgSrc;
+        this.signaturePad._isEmpty = false;
     }
 
     /**
@@ -304,6 +309,7 @@ export class NameAndSignature extends Component {
             // draw based on name
             this.drawCurrentName();
         }
+        this.props.onSignatureChange(this.state.signMode);
     }
 
     /**

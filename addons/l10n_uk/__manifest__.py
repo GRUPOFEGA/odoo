@@ -3,7 +3,7 @@
     'name': 'United Kingdom - Accounting',
     'icon': '/account/static/description/l10n.png',
     'countries': ['gb'],
-    'version': '1.0',
+    'version': '1.1',
     'category': 'Accounting/Localizations/Account Charts',
     'description': """
 This is the latest UK Odoo localisation necessary to run Odoo accounting for UK SME's with:
@@ -28,5 +28,6 @@ This is the latest UK Odoo localisation necessary to run Odoo accounting for UK 
         'demo/l10n_uk_demo.xml',
         'demo/demo_company.xml',
     ],
+    'post_init_hook': '_l10n_uk_post_init',
     'license': 'LGPL-3',
 }

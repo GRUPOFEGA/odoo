@@ -1,9 +1,10 @@
 /** @odoo-module */
 
 import { HootDomError, getTag, isFirefox, isIterable, parseRegExp } from "../hoot_dom_utils";
+import { Deferred, waitUntil } from "./time";
 
 /**
- * @typedef {{
+ * @typedef {number | [number, number] | {
  *  w?: number;
  *  h?: number;
  *  width?: number;
@@ -11,7 +12,7 @@ import { HootDomError, getTag, isFirefox, isIterable, parseRegExp } from "../hoo
  * }} Dimensions
  *
  * @typedef {{
- *  parent?: Node;
+ *  root?: Target;
  *  tabbable?: boolean;
  * }} FocusableOptions
  *
@@ -24,18 +25,20 @@ import { HootDomError, getTag, isFirefox, isIterable, parseRegExp } from "../hoo
  * @typedef {{
  *  inline: boolean;
  *  level: number;
- *  value: {
- *      close?: string;
- *      open?: string;
- *      textContent?: string;
- *  };
+ *  value: MarkupLayerValue;
  * }} MarkupLayer
+ *
+ * @typedef {{
+ *  close?: string;
+ *  open?: string;
+ *  textContent?: string;
+ * }} MarkupLayerValue
  *
  * @typedef {(node: Node, selector: string) => Node[]} NodeGetter
  *
  * @typedef {string | string[] | number | boolean | File[]} NodeValue
  *
- * @typedef {{
+ * @typedef {number | [number, number] | {
  *  x?: number;
  *  y?: number;
  *  left?: number;
@@ -44,6 +47,8 @@ import { HootDomError, getTag, isFirefox, isIterable, parseRegExp } from "../hoo
  *  clientY?: number;
  *  pageX?: number;
  *  pageY?: number;
+ *  screenX?: number;
+ *  screenY?: number;
  * }} Position
  *
  * @typedef {(content: string) => (node: Node, index: number, nodes: Node[]) => boolean | Node} PseudoClassPredicateBuilder
@@ -52,6 +57,7 @@ import { HootDomError, getTag, isFirefox, isIterable, parseRegExp } from "../hoo
  *  displayed?: boolean;
  *  exact?: number;
  *  root?: HTMLElement;
+ *  viewPort?: boolean;
  *  visible?: boolean;
  * }} QueryOptions
  *
@@ -63,17 +69,17 @@ import { HootDomError, getTag, isFirefox, isIterable, parseRegExp } from "../hoo
  *  raw?: boolean;
  * }} QueryTextOptions
  *
- * @typedef {MaybeIterable<Node> | string | null | undefined | false} Target
- *
- * @typedef {{
- *  message?: string | () => string;
- *  timeout?: number;
- * }} WaitOptions
+ * @typedef {import("./time").WaitOptions} WaitOptions
  */
 
 /**
  * @template T
  * @typedef {T | Iterable<T>} MaybeIterable
+ */
+
+/**
+ * @template [T=Node]
+ * @typedef {MaybeIterable<T> | string | null | undefined | false} Target
  */
 
 //-----------------------------------------------------------------------------
@@ -82,20 +88,16 @@ import { HootDomError, getTag, isFirefox, isIterable, parseRegExp } from "../hoo
 
 const {
     Boolean,
-    cancelAnimationFrame,
-    clearTimeout,
     document,
     DOMParser,
+    innerWidth,
+    innerHeight,
     Map,
-    Math: { floor: $floor },
     MutationObserver,
     Number: { isInteger: $isInteger, isNaN: $isNaN, parseInt: $parseInt, parseFloat: $parseFloat },
     Object: { keys: $keys, values: $values },
-    Promise,
     RegExp,
-    requestAnimationFrame,
     Set,
-    setTimeout,
 } = globalThis;
 
 //-----------------------------------------------------------------------------
@@ -117,6 +119,28 @@ const and = (values) => {
 const compilePseudoClassRegex = () => {
     const customKeys = [...customPseudoClasses.keys()].filter((k) => k !== "has" && k !== "not");
     return new RegExp(`:(${customKeys.join("|")})`);
+};
+
+/**
+ * @param {Element[]} elements
+ * @param {string} selector
+ */
+const elementsMatch = (elements, selector) => {
+    if (!elements.length) {
+        return false;
+    }
+    return parseSelector(selector).some((selectorParts) => {
+        const [baseSelector, ...filters] = selectorParts.at(-1);
+        for (let i = 0; i < elements.length; i++) {
+            if (baseSelector && !elements[i].matches(baseSelector)) {
+                return false;
+            }
+            if (!filters.every((filter) => matchFilter(filter, elements, i))) {
+                return false;
+            }
+        }
+        return true;
+    });
 };
 
 /**
@@ -232,13 +256,6 @@ const generateStringFromLayers = (layers, tabSize) => {
 };
 
 /**
- * @param {string} string
- */
-const getStringContent = (string) => {
-    return string.match(R_QUOTE_CONTENT)?.[2] || string;
-};
-
-/**
  * @param {Node} node
  * @returns {NodeValue}
  */
@@ -253,6 +270,11 @@ const getNodeContent = (node) => {
     }
     return getNodeText(node);
 };
+
+/**
+ * @param {string} string
+ */
+const getStringContent = (string) => string.match(R_QUOTE_CONTENT)?.[2] || string;
 
 /**
  * @param {string} [char]
@@ -276,93 +298,17 @@ const isElement = (object) => object?.nodeType === Node.ELEMENT_NODE;
 /**
  * @param {Node} node
  */
-const isNodeCssVisible = (node) => {
-    const element = ensureElement(node);
-    if (element === getDefaultRoot() || isRootElement(element)) {
-        return true;
-    }
-    const style = getStyle(element);
-    if (style?.visibility === "hidden" || style?.opacity === "0") {
-        return false;
-    }
-    const parent = element.parentNode;
-    return !parent || isNodeCssVisible(parent);
-};
-
-/**
- * @param {Window | Node} node
- */
-const isNodeDisplayed = (node) => {
-    const element = ensureElement(node);
-    if (!isInDOM(element)) {
-        return false;
-    }
-    if (isRootElement(element) || element.offsetParent || element.closest("svg")) {
-        return true;
-    }
-    // `position=fixed` elements in Chrome do not have an `offsetParent`
-    return !isFirefox() && getStyle(element)?.position === "fixed";
-};
-
-/**
- * @param {Window | Node} node
- * @param {"x" | "y"} [axis]
- */
-const isNodeScrollable = (node, axis) => {
-    if (!isElement(node)) {
-        return false;
-    }
-    const [scrollProp, sizeProp] =
-        axis === "x" ? ["scrollWidth", "clientWidth"] : ["scrollHeight", "clientHeight"];
-    if (node[scrollProp] > node[sizeProp]) {
-        const overflow = getStyle(node).getPropertyValue("overflow");
-        if (/\bauto\b|\bscroll\b/.test(overflow)) {
-            return true;
-        }
-    }
-    return false;
-};
-
-/**
- * @param {Window | Node} node
- */
-const isNodeVisible = (node) => {
-    const element = ensureElement(node);
-
-    // Must be displayed and not hidden by CSS
-    if (!isNodeDisplayed(element) || !isNodeCssVisible(element)) {
-        return false;
-    }
-
-    let visible = false;
-
-    // Check size (width & height)
-    if (typeof element.getBoundingClientRect === "function") {
-        const { width, height } = getNodeRect(element);
-        visible = width > 0 && height > 0;
-    }
-
-    // Check content (if display=contents)
-    if (!visible && getStyle(element)?.display === "contents") {
-        for (const child of element.childNodes) {
-            if (isNodeVisible(child)) {
-                return true;
-            }
-        }
-    }
-
-    return visible;
-};
-
-/**
- * @param {Node} node
- */
 const isQueryableNode = (node) => QUERYABLE_NODE_TYPES.includes(node.nodeType);
 
 /**
  * @param {Element} [el]
  */
 const isRootElement = (el) => el && R_ROOT_ELEMENT.test(el.nodeName || "");
+
+/**
+ * @param {Element} el
+ */
+const isShadowRoot = (el) => el.nodeType === Node.DOCUMENT_FRAGMENT_NODE && Boolean(el.host);
 
 /**
  * @template T
@@ -497,6 +443,32 @@ const matchesQueryPart = (query, width, height) => {
 };
 
 /**
+ * @template T
+ * @param {T} value
+ * @param {(keyof T)[]} propsA
+ * @param {(keyof T)[]} propsB
+ * @returns {[number, number]}
+ */
+const parseNumberTuple = (value, propsA, propsB) => {
+    let result = [];
+    if (value && typeof value === "object") {
+        if (isIterable(value)) {
+            [result[0], result[1]] = [...value];
+        } else {
+            for (const prop of propsA) {
+                result[0] ??= value[prop];
+            }
+            for (const prop of propsB) {
+                result[1] ??= value[prop];
+            }
+        }
+    } else {
+        result = [value, value];
+    }
+    return result.map($parseFloat);
+};
+
+/**
  * Parses a given selector string into a list of selector groups.
  *
  * - the return value is a list of selector `group` objects (representing comma-separated
@@ -626,6 +598,13 @@ const parseSelector = (selector) => {
             if (parens[0] === parens[1]) {
                 const [pseudo, content] = currentPseudo;
                 const makeFilter = customPseudoClasses.get(pseudo);
+                if (pseudo === "iframe" && !currentPart[0].startsWith("iframe")) {
+                    // Special case: to optimise the ":iframe" pseudo class, we
+                    // always select actual `iframe` elements.
+                    // Note that this may create "impossible" tag names (like "iframediv")
+                    // but this pseudo won't work on non-iframe elements anyway.
+                    currentPart[0] = `iframe${currentPart[0]}`;
+                }
                 currentPart.push(makeFilter(getStringContent(content)));
                 currentPseudo = null;
             } else if (registerChar) {
@@ -644,16 +623,20 @@ const parseSelector = (selector) => {
  * @param {"html" | "xml"} type
  */
 const parseXml = (xmlString, type) => {
-    const document = parser.parseFromString(`<templates>${xmlString}</templates>`, `text/${type}`);
+    const wrapperTag = type === "html" ? "body" : "templates";
+    const document = parser.parseFromString(
+        `<${wrapperTag}>${xmlString}</${wrapperTag}>`,
+        `text/${type}`
+    );
     if (document.getElementsByTagName("parsererror").length) {
-        const trimmed = xmlString.length > 80 ? xmlString.slice(0, 80) + "..." : xmlString;
+        const trimmed = xmlString.length > 80 ? xmlString.slice(0, 80) + "…" : xmlString;
         throw new HootDomError(
             `error while parsing ${trimmed}: ${getNodeText(
                 document.getElementsByTagName("parsererror")[0]
             )}`
         );
     }
-    return document.documentElement.childNodes;
+    return document.getElementsByTagName(wrapperTag)[0].childNodes;
 };
 
 /**
@@ -750,22 +733,6 @@ const R_ROOT_ELEMENT = /^(HTML|HEAD|BODY)$/;
 const R_HORIZONTAL_WHITESPACE =
     /[\r\t\f \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]+/g;
 
-// Following selector is based on this spec:
-// https://html.spec.whatwg.org/multipage/interaction.html#dom-tabindex
-const FOCUSABLE_SELECTOR = [
-    "a[href]",
-    "area[href]",
-    "button:enabled",
-    "details > summary:first-of-type",
-    "iframe",
-    "input:enabled",
-    "select:enabled",
-    "textarea:enabled",
-    "[draggable]",
-    "[tabindex]",
-    "[contenteditable=true]",
-].join(",");
-
 const QUERYABLE_NODE_TYPES = [Node.ELEMENT_NODE, Node.DOCUMENT_NODE, Node.DOCUMENT_FRAGMENT_NODE];
 
 const parser = new DOMParser();
@@ -806,8 +773,8 @@ const NEXT_SIBLINGS = (node, selector) => {
 /** @type {Map<HTMLElement, { callbacks: Set<MutationCallback>, observer: MutationObserver }>} */
 const observers = new Map();
 const currentDimensions = {
-    width: null,
-    height: null,
+    width: innerWidth,
+    height: innerHeight,
 };
 let getDefaultRoot = () => document;
 
@@ -861,9 +828,8 @@ customPseudoClasses
     })
     .set("iframe", () => {
         return function iframe(node) {
-            if (getTag(node) !== "iframe") {
-                return false;
-            }
+            // Note: should only apply on `iframe` elements
+            /** @see parseSelector */
             const doc = node.contentDocument;
             return doc && doc.readyState !== "loading" ? doc : false;
         };
@@ -898,7 +864,6 @@ customPseudoClasses
             return node.shadowRoot || false;
         };
     })
-    .set("text", makePatternBasedPseudoClass("text", getNodeText))
     .set("value", makePatternBasedPseudoClass("value", getNodeValue))
     .set("visible", () => {
         return function visible(node) {
@@ -906,21 +871,20 @@ customPseudoClasses
         };
     });
 
-let rCustomPseudoClass = compilePseudoClassRegex();
+const rCustomPseudoClass = compilePseudoClassRegex();
 
 //-----------------------------------------------------------------------------
-// Exports
+// Internal exports (inside Hoot/Hoot-DOM)
 //-----------------------------------------------------------------------------
 
 export function cleanupDOM() {
     // Dimensions
-    currentDimensions.width = null;
-    currentDimensions.height = null;
+    currentDimensions.width = innerWidth;
+    currentDimensions.height = innerHeight;
 
     // Observers
     const remainingObservers = observers.size;
     if (remainingObservers) {
-        console.warn(`${remainingObservers} observers still running`);
         for (const { observer } of observers.values()) {
             observer.disconnect();
         }
@@ -941,31 +905,6 @@ export function defineRootNode(node) {
     }
 }
 
-/**
- * @param {string} value
- * @param {FormatXmlOptions} [options]
- * @returns {string}
- */
-export function formatXml(value, options) {
-    const nodes = parseXml(value, options?.type || "xml");
-    const layers = extractLayers(nodes, 0, options?.keepInlineTextNodes ?? false);
-    return generateStringFromLayers(layers, options?.tabSize ?? 4);
-}
-
-/**
- * @param {Node} [node]
- */
-export function getActiveElement(node) {
-    const { activeElement } = getDocument(node);
-    if (activeElement.contentDocument) {
-        return getActiveElement(activeElement.contentDocument);
-    }
-    if (activeElement.shadowRoot) {
-        return activeElement.shadowRoot.activeElement;
-    }
-    return activeElement;
-}
-
 export function getCurrentDimensions() {
     return currentDimensions;
 }
@@ -981,70 +920,6 @@ export function getDefaultRootNode() {
 export function getDocument(node) {
     node ||= getDefaultRoot();
     return isDocument(node) ? node : node.ownerDocument || document;
-}
-
-/**
- * Returns the list of focusable elements in the given parent, sorted by their `tabIndex`
- * property.
- *
- * @see {@link isFocusable} for more information
- * @param {FocusableOptions} [options]
- * @returns {Element[]}
- * @example
- *  getFocusableElements();
- */
-export function getFocusableElements(options) {
-    const parent = options?.parent || getDefaultRoot();
-    if (typeof parent.querySelectorAll !== "function") {
-        return [];
-    }
-    const byTabIndex = {};
-    for (const element of parent.querySelectorAll(FOCUSABLE_SELECTOR)) {
-        const { tabIndex } = element;
-        if ((options?.tabbable && tabIndex < 0) || !isNodeDisplayed(element)) {
-            continue;
-        }
-        if (!byTabIndex[tabIndex]) {
-            byTabIndex[tabIndex] = [];
-        }
-        byTabIndex[tabIndex].push(element);
-    }
-    const withTabIndexZero = byTabIndex[0] || [];
-    delete byTabIndex[0];
-    return [...$values(byTabIndex).flat(), ...withTabIndexZero];
-}
-
-/**
- * @param {Dimensions} dimensions
- * @returns {number}
- */
-export function getHeight(dimensions) {
-    if (dimensions) {
-        for (const prop of ["h", "height"]) {
-            const value = $parseFloat(dimensions[prop]);
-            if (!$isNaN(value)) {
-                return value;
-            }
-        }
-    }
-    return NaN;
-}
-
-/**
- * Returns the next focusable element after the current active element if it is
- * contained in the given parent.
- *
- * @see {@link getFocusableElements}
- * @param {FocusableOptions} [options]
- * @returns {Element | null}
- * @example
- *  getPreviousFocusableElement();
- */
-export function getNextFocusableElement(options) {
-    const parent = options?.parent || getDefaultRoot();
-    const focusableEls = getFocusableElements(parent, options);
-    const index = focusableEls.indexOf(getActiveElement(parent));
-    return focusableEls[index + 1] || null;
 }
 
 /**
@@ -1130,42 +1005,6 @@ export function getNodeText(node, options) {
 }
 
 /**
- * Returns the parent `<iframe>` of a given node (if any).
- *
- * @param {Node} node
- * @returns {HTMLIFrameElement | null}
- */
-export function getParentFrame(node) {
-    const nodeDocument = node.ownerDocument;
-    const view = nodeDocument.defaultView;
-    if (view !== view.parent) {
-        for (const iframe of view.parent.document.getElementsByTagName("iframe")) {
-            if (iframe.contentDocument === nodeDocument) {
-                return iframe;
-            }
-        }
-    }
-    return null;
-}
-
-/**
- * Returns the previous focusable element before the current active element if it is
- * contained in the given parent.
- *
- * @see {@link getFocusableElements}
- * @param {FocusableOptions} [options]
- * @returns {Element | null}
- * @example
- *  getPreviousFocusableElement();
- */
-export function getPreviousFocusableElement(options) {
-    const parent = options?.parent || getDefaultRoot();
-    const focusableEls = getFocusableElements(parent, options);
-    const index = focusableEls.indexOf(getActiveElement(parent));
-    return index < 0 ? focusableEls.at(-1) : focusableEls[index - 1] || null;
-}
-
-/**
  * @template {Node} T
  * @param {T} node
  * @returns {T extends Element ? CSSStyleDeclaration : null}
@@ -1175,59 +1014,11 @@ export function getStyle(node) {
 }
 
 /**
- * @param {Dimensions} dimensions
- * @returns {number}
- */
-export function getWidth(dimensions) {
-    if (dimensions) {
-        for (const prop of ["w", "width"]) {
-            const value = $parseFloat(dimensions[prop]);
-            if (!$isNaN(value)) {
-                return value;
-            }
-        }
-    }
-    return NaN;
-}
-
-/**
  * @param {Node} [node]
  * @returns {Window}
  */
 export function getWindow(node) {
     return getDocument(node).defaultView;
-}
-
-/**
- * @param {Position} position
- * @returns {number}
- */
-export function getX(position) {
-    if (position) {
-        for (const prop of ["x", "left", "clientX", "pageX", "screenX"]) {
-            const value = $parseFloat(position[prop]);
-            if (!$isNaN(value)) {
-                return value;
-            }
-        }
-    }
-    return NaN;
-}
-
-/**
- * @param {Position} position
- * @returns {number}
- */
-export function getY(position) {
-    if (position) {
-        for (const prop of ["y", "top", "clientY", "pageY", "screenY"]) {
-            const value = $parseFloat(position[prop]);
-            if (!$isNaN(value)) {
-                return value;
-            }
-        }
-    }
-    return NaN;
 }
 
 /**
@@ -1243,41 +1034,6 @@ export function isCheckable(node) {
         default:
             return false;
     }
-}
-
-/**
- * Checks whether a target is displayed, meaning that it has an offset parent and
- * is contained in the current document.
- *
- * Note that it does not mean that the target is "visible" (it can still be hidden
- * by CSS properties such as `width`, `opacity`, `visiblity`, etc.).
- *
- * @param {Target} target
- * @returns {boolean}
- */
-export function isDisplayed(target) {
-    return queryAll(target, { displayed: true }).length > 0;
-}
-
-/**
- * Returns whether the given node is editable, meaning that it is an `":enabled"`
- * `<input>` or `<textarea>` {@link Element};
- *
- * Note: this does NOT support elements with `contenteditable="true"`.
- *
- * @param {Node} node
- * @returns {boolean}
- * @example
- *  isEditable(document.querySelector("input")); // true
- * @example
- *  isEditable(document.body); // false
- */
-export function isEditable(node) {
-    return (
-        isElement(node) &&
-        !node.matches?.(":disabled") &&
-        ["input", "textarea"].includes(getTag(node))
-    );
 }
 
 /**
@@ -1301,79 +1057,62 @@ export function isEmpty(value) {
 }
 
 /**
- * Returns whether the given target is an {@link EventTarget}.
+ * Returns whether the given object is an {@link EventTarget}.
  *
  * @template T
- * @param {T} target
+ * @param {T} object
  * @returns {T extends EventTarget ? true : false}
  * @example
  *  isEventTarget(window); // true
  * @example
  *  isEventTarget(new App()); // false
  */
-export function isEventTarget(target) {
-    return target && typeof target.addEventListener === "function";
-}
-
-/**
- * Returns whether an element is focusable. Focusable elements are either:
- * - `<a>` or `<area>` elements with an `href` attribute;
- * - *enabled* `<button>`, `<input>`, `<select>` and `<textarea>` elements;
- * - `<iframe>` elements;
- * - any element with its `contenteditable` attribute set to `"true"`.
- *
- * A focusable element must also not have a `tabIndex` property set to less than 0.
- *
- * @see {@link FOCUSABLE_SELECTOR}
- * @param {Target} target
- * @param {FocusableOptions} [options]
- * @returns {boolean}
- */
-export function isFocusable(target, options) {
-    const nodes = queryAll(target, { root: options?.parent });
-    return nodes.length && nodes.every((node) => isNodeFocusable(node, options));
-}
-
-/**
- * Returns whether the given target is contained in the current root document.
- *
- * @param {Window | Node} target
- * @returns {boolean}
- * @example
- *  isInDOM(document.querySelector("div")); // true
- * @example
- *  isInDOM(document.createElement("div")); // false
- */
-export function isInDOM(target) {
-    target = ensureElement(target);
-    if (!target) {
-        return false;
-    }
-    const frame = getParentFrame(target);
-    if (frame) {
-        return isInDOM(frame);
-    }
-    while (target) {
-        if (target === document) {
-            return true;
-        }
-        target = target.parentNode;
-        if (target?.host) {
-            target = target.host.parentNode;
-        }
-    }
-    return false;
+export function isEventTarget(object) {
+    return object && typeof object.addEventListener === "function";
 }
 
 /**
  * Returns whether the given object is a {@link Node} object.
+ * Note that it is independant from the {@link Node} class itself to support
+ * cross-window checks.
  *
  * @template T
  * @param {T} object
  * @returns {T extends Node ? true : false}
  */
 export function isNode(object) {
-    return typeof object === "object" && Boolean(object?.nodeType);
+    return object && typeof object.nodeType === "number" && typeof object.nodeName === "string";
+}
+
+/**
+ * @param {Node} node
+ */
+export function isNodeCssVisible(node) {
+    const element = ensureElement(node);
+    if (element === getDefaultRoot() || isRootElement(element)) {
+        return true;
+    }
+    const style = getStyle(element);
+    if (style?.visibility === "hidden" || style?.opacity === "0") {
+        return false;
+    }
+    const parent = element.parentNode;
+    return !parent || isNodeCssVisible(isShadowRoot(parent) ? parent.host : parent);
+}
+
+/**
+ * @param {Window | Node} node
+ */
+export function isNodeDisplayed(node) {
+    const element = ensureElement(node);
+    if (!isInDOM(element)) {
+        return false;
+    }
+    if (isRootElement(element) || element.offsetParent || element.closest("svg")) {
+        return true;
+    }
+    // `position=fixed` elements in Chrome do not have an `offsetParent`
+    return !isFirefox() && getStyle(element)?.position === "fixed";
 }
 
 /**
@@ -1389,56 +1128,61 @@ export function isNodeFocusable(node, options) {
 }
 
 /**
- * Returns whether an element is scrollable.
- *
- * @param {Target} target
+ * @param {Window | Node} node
+ */
+export function isNodeInViewPort(node) {
+    const element = ensureElement(node);
+    const { x, y } = getNodeRect(element);
+
+    return y > 0 && y < currentDimensions.height && x > 0 && x < currentDimensions.width;
+}
+
+/**
+ * @param {Window | Node} node
  * @param {"x" | "y"} [axis]
- * @returns {boolean}
  */
-export function isScrollable(target, axis) {
-    const nodes = queryAll(target);
-    return nodes.length && nodes.every((node) => isNodeScrollable(node, axis));
+export function isNodeScrollable(node, axis) {
+    if (!isElement(node)) {
+        return false;
+    }
+    const [scrollProp, sizeProp] =
+        axis === "x" ? ["scrollWidth", "clientWidth"] : ["scrollHeight", "clientHeight"];
+    if (node[scrollProp] > node[sizeProp]) {
+        const overflow = getStyle(node).getPropertyValue("overflow");
+        if (/\bauto\b|\bscroll\b/.test(overflow)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 /**
- * Checks whether an target is visible, meaning that it is "displayed" (see {@link isDisplayed}),
- * has a non-zero width and height, and is not hidden by "opacity" or "visibility"
- * CSS properties.
- *
- * Note that it does not account for:
- *  - the position of the target in the viewport (e.g. negative x/y coordinates)
- *  - the color of the target (e.g. transparent text with no background).
- *
- * @param {Target} target
- * @returns {boolean}
+ * @param {Window | Node} node
  */
-export function isVisible(target) {
-    return queryAll(target, { visible: true }).length > 0;
-}
+export function isNodeVisible(node) {
+    const element = ensureElement(node);
 
-/**
- * @param {MaybeIterable<Node>} node
- * @param {string} selector
- * @returns {boolean}
- */
-export function matches(node, selector) {
-    const nodes = isIterable(node) && !isNode(node) ? [...node] : [node];
-    if (!nodes.length) {
+    // Must be displayed and not hidden by CSS
+    if (!isNodeDisplayed(element) || !isNodeCssVisible(element)) {
         return false;
     }
 
-    return parseSelector(selector).some((selectorParts) => {
-        const [baseSelector, ...filters] = selectorParts.at(-1);
-        for (let i = 0; i < nodes.length; i++) {
-            if (baseSelector && !nodes[i].matches(baseSelector)) {
-                return false;
-            }
-            if (!filters.every((filter) => matchFilter(filter, nodes, i))) {
-                return false;
+    let visible = false;
+
+    // Check size (width & height)
+    const { width, height } = getNodeRect(element);
+    visible = width > 0 && height > 0;
+
+    // Check content (if display=contents)
+    if (!visible && getStyle(element)?.display === "contents") {
+        for (const child of element.childNodes) {
+            if (isNodeVisible(child)) {
+                return true;
             }
         }
-        return true;
-    });
+    }
+
+    return visible;
 }
 
 /**
@@ -1471,6 +1215,317 @@ export function mockedMatchMedia(query) {
 mockedMatchMedia.COLOR_SCHEME = "light";
 mockedMatchMedia.DISPLAY_MODE = "browser";
 mockedMatchMedia.REDUCED_MOTION = "reduce";
+
+/**
+ * @param {Dimensions} dimensions
+ * @returns {[number, number]}
+ */
+export function parseDimensions(dimensions) {
+    return parseNumberTuple(dimensions, ["width", "w"], ["height", "h"]);
+}
+
+/**
+ * @param {Position} position
+ * @returns {[number, number]}
+ */
+export function parsePosition(position) {
+    return parseNumberTuple(
+        position,
+        ["x", "left", "clientX", "pageX", "screenX"],
+        ["y", "top", "clientY", "pageY", "screenY"]
+    );
+}
+
+/**
+ * @param {number} width
+ * @param {number} height
+ */
+export function setDimensions(width, height) {
+    const defaultRoot = getDefaultRoot();
+    if (!$isNaN(width)) {
+        currentDimensions.width = width;
+        defaultRoot.style?.setProperty("width", `${width}px`, "important");
+    }
+    if (!$isNaN(height)) {
+        currentDimensions.height = height;
+        defaultRoot.style?.setProperty("height", `${height}px`, "important");
+    }
+}
+
+/**
+ * @param {Node} node
+ * @param {{ object?: boolean }} [options]
+ * @returns {string | string[]}
+ */
+export function toSelector(node, options) {
+    const parts = {
+        tag: node.nodeName.toLowerCase(),
+    };
+    if (node.id) {
+        parts.id = `#${node.id}`;
+    }
+    if (node.classList?.length) {
+        parts.class = `.${[...node.classList].join(".")}`;
+    }
+    return options?.object ? parts : $values(parts).join("");
+}
+
+// Following selector is based on this spec:
+// https://html.spec.whatwg.org/multipage/interaction.html#dom-tabindex
+export const FOCUSABLE_SELECTOR = [
+    "a[href]",
+    "area[href]",
+    "button:enabled",
+    "details > summary:first-of-type",
+    "iframe",
+    "input:enabled",
+    "select:enabled",
+    "textarea:enabled",
+    "[tabindex]",
+    "[contenteditable=true]",
+].join(",");
+
+//-----------------------------------------------------------------------------
+// Exports
+//-----------------------------------------------------------------------------
+
+/**
+ * Returns a standardized representation of the given `string` value as a human-readable
+ * XML string template (or HTML if the `type` option is `"html"`).
+ *
+ * @param {string} value
+ * @param {FormatXmlOptions} [options]
+ * @returns {string}
+ */
+export function formatXml(value, options) {
+    const nodes = parseXml(value, options?.type || "xml");
+    const layers = extractLayers(nodes, 0, options?.keepInlineTextNodes ?? false);
+    return generateStringFromLayers(layers, options?.tabSize ?? 4);
+}
+
+/**
+ * Returns the active element in the given document (or in the owner document of
+ * the given node).
+ *
+ * @param {Node} [node]
+ */
+export function getActiveElement(node) {
+    const { activeElement } = getDocument(node);
+    if (activeElement.contentDocument) {
+        return getActiveElement(activeElement.contentDocument);
+    }
+    if (activeElement.shadowRoot) {
+        return activeElement.shadowRoot.activeElement;
+    }
+    return activeElement;
+}
+
+/**
+ * Returns the list of focusable elements in the given parent, sorted by their `tabIndex`
+ * property.
+ *
+ * @see {@link isFocusable} for more information
+ * @param {FocusableOptions} [options]
+ * @returns {Element[]}
+ * @example
+ *  getFocusableElements();
+ */
+export function getFocusableElements(options) {
+    const parent = options?.root || getDefaultRoot();
+    if (typeof parent.querySelectorAll !== "function") {
+        return [];
+    }
+    const byTabIndex = {};
+    for (const element of parent.querySelectorAll(FOCUSABLE_SELECTOR)) {
+        const { tabIndex } = element;
+        if ((options?.tabbable && tabIndex < 0) || !isNodeDisplayed(element)) {
+            continue;
+        }
+        if (!byTabIndex[tabIndex]) {
+            byTabIndex[tabIndex] = [];
+        }
+        byTabIndex[tabIndex].push(element);
+    }
+    const withTabIndexZero = byTabIndex[0] || [];
+    delete byTabIndex[0];
+    return [...$values(byTabIndex).flat(), ...withTabIndexZero];
+}
+
+/**
+ * Returns the next focusable element after the current active element if it is
+ * contained in the given parent.
+ *
+ * @see {@link getFocusableElements}
+ * @param {FocusableOptions} [options]
+ * @returns {Element | null}
+ * @example
+ *  getPreviousFocusableElement();
+ */
+export function getNextFocusableElement(options) {
+    const parent = options?.root || getDefaultRoot();
+    const focusableEls = getFocusableElements(parent, options);
+    const index = focusableEls.indexOf(getActiveElement(parent));
+    return focusableEls[index + 1] || null;
+}
+
+/**
+ * Returns the parent `<iframe>` of a given node (if any).
+ *
+ * @param {Node} node
+ * @returns {HTMLIFrameElement | null}
+ */
+export function getParentFrame(node) {
+    const nodeDocument = node.ownerDocument;
+    const view = nodeDocument.defaultView;
+    if (view !== view.parent) {
+        for (const iframe of view.parent.document.getElementsByTagName("iframe")) {
+            if (iframe.contentDocument === nodeDocument) {
+                return iframe;
+            }
+        }
+    }
+    return null;
+}
+
+/**
+ * Returns the previous focusable element before the current active element if it is
+ * contained in the given parent.
+ *
+ * @see {@link getFocusableElements}
+ * @param {FocusableOptions} [options]
+ * @returns {Element | null}
+ * @example
+ *  getPreviousFocusableElement();
+ */
+export function getPreviousFocusableElement(options) {
+    const parent = options?.root || getDefaultRoot();
+    const focusableEls = getFocusableElements(parent, options);
+    const index = focusableEls.indexOf(getActiveElement(parent));
+    return index < 0 ? focusableEls.at(-1) : focusableEls[index - 1] || null;
+}
+
+/**
+ * Checks whether a target is displayed, meaning that it has an offset parent and
+ * is contained in the current document.
+ *
+ * Note that it does not mean that the target is "visible" (it can still be hidden
+ * by CSS properties such as `width`, `opacity`, `visiblity`, etc.).
+ *
+ * @param {Target} target
+ * @returns {boolean}
+ */
+export function isDisplayed(target) {
+    return queryAll(target, { displayed: true }).length > 0;
+}
+
+/**
+ * Returns whether the given node is editable, meaning that it is an `":enabled"`
+ * `<input>` or `<textarea>` {@link Element};
+ *
+ * Note: this does **NOT** support elements with `contenteditable="true"`.
+ *
+ * @param {Node} node
+ * @returns {boolean}
+ * @example
+ *  isEditable(document.querySelector("input")); // true
+ * @example
+ *  isEditable(document.body); // false
+ */
+export function isEditable(node) {
+    return (
+        isElement(node) &&
+        !node.matches?.(":disabled") &&
+        ["input", "textarea"].includes(getTag(node))
+    );
+}
+
+/**
+ * Returns whether an element is focusable. Focusable elements are either:
+ * - `<a>` or `<area>` elements with an `href` attribute;
+ * - *enabled* `<button>`, `<input>`, `<select>` and `<textarea>` elements;
+ * - `<iframe>` elements;
+ * - any element with its `contenteditable` attribute set to `"true"`.
+ *
+ * A focusable element must also not have a `tabIndex` property set to less than 0.
+ *
+ * @see {@link FOCUSABLE_SELECTOR}
+ * @param {Target} target
+ * @param {FocusableOptions} [options]
+ * @returns {boolean}
+ */
+export function isFocusable(target, options) {
+    const nodes = queryAll(...arguments);
+    return nodes.length && nodes.every((node) => isNodeFocusable(node, options));
+}
+
+/**
+ * Returns whether the given target is contained in the current root document.
+ *
+ * @param {Window | Node} target
+ * @returns {boolean}
+ * @example
+ *  isInDOM(queryFirst("div")); // true
+ * @example
+ *  isInDOM(document.createElement("div")); // Not attached -> false
+ */
+export function isInDOM(target) {
+    return ensureElement(target)?.isConnected;
+}
+
+/**
+ * Checks whether a target is *at least partially* visible in the current viewport.
+ *
+ * @param {Target} target
+ * @returns {boolean}
+ */
+export function isInViewPort(target) {
+    return queryAll(target, { viewPort: true }).length > 0;
+}
+
+/**
+ * Returns whether an element is scrollable.
+ *
+ * @param {Target} target
+ * @param {"x" | "y"} [axis]
+ * @returns {boolean}
+ */
+export function isScrollable(target, axis) {
+    const nodes = queryAll(target);
+    return nodes.length && nodes.every((node) => isNodeScrollable(node, axis));
+}
+
+/**
+ * Checks whether a target is visible, meaning that it is "displayed" (see {@link isDisplayed}),
+ * has a non-zero width and height, and is not hidden by "opacity" or "visibility"
+ * CSS properties.
+ *
+ * Note that it does not account for:
+ *  - the position of the target in the viewport (e.g. negative x/y coordinates)
+ *  - the color of the target (e.g. transparent text with no background).
+ *
+ * @param {Target} target
+ * @returns {boolean}
+ */
+export function isVisible(target) {
+    return queryAll(target, { visible: true }).length > 0;
+}
+
+/**
+ * Equivalent to the native `node.matches(selector)`, with a few differences:
+ * - it can take any {@link Target} (strings, nodes and iterable of nodes);
+ * - it supports custom pseudo-classes, such as ":contains" or ":visible".
+ *
+ * @param {Target} target
+ * @param {string} selector
+ * @returns {boolean}
+ * @example
+ *  matches("input[name=surname]", ":value(John)");
+ * @example
+ *  matches(buttonEl, ":contains(Submit)");
+ */
+export function matches(target, selector) {
+    return elementsMatch(queryAll(target), selector);
+}
 
 /**
  * Listens for DOM mutations on a given target.
@@ -1518,22 +1573,6 @@ export function observe(target, callback) {
 }
 
 /**
- * @param {Dimensions} dimensions
- * @returns {[number, number]}
- */
-export function parseDimensions(dimensions) {
-    return [getWidth(dimensions), getHeight(dimensions)];
-}
-
-/**
- * @param {Position} position
- * @returns {[number, number]}
- */
-export function parsePosition(position) {
-    return [getX(position), getY(position)];
-}
-
-/**
  * Returns a list of nodes matching the given {@link Target}.
  * This function can either be used as a **template literal tag** (only supports
  * string selector without options) or invoked the usual way.
@@ -1574,6 +1613,8 @@ export function parsePosition(position) {
  *  nodes doesn't match);
  * - `focusable`: whether the nodes must be "focusable" (see {@link isFocusable});
  * - `root`: the root node to query the selector in (defaults to the current fixture);
+ * - `viewPort`: whether the nodes must be partially visible in the current viewport
+ *  (see {@link isInViewPort});
  * - `visible`: whether the nodes must be "visible" (see {@link isVisible}).
  *      * This option implies `displayed`
  *
@@ -1612,14 +1653,14 @@ export function queryAll(target, options) {
         return queryAll(String.raw(...arguments));
     }
 
-    const { exact, displayed, root, visible } = options || {};
+    const { exact, displayed, root, viewPort, visible } = options || {};
 
     /** @type {Node[]} */
     let nodes = [];
     let selector;
 
     if (typeof target === "string") {
-        nodes = filterUniqueNodes([root || getDefaultRoot()]);
+        nodes = root ? queryAll(root) : [getDefaultRoot()];
         selector = target.trim();
         // HTMLSelectElement is iterable ¯\_(ツ)_/¯
     } else if (isIterable(target) && !isNode(target)) {
@@ -1636,29 +1677,32 @@ export function queryAll(target, options) {
         }
     }
 
-    /** @type {string[]} */
-    const prefixes = [];
-    if (visible) {
-        nodes = nodes.filter(isNodeVisible);
-        prefixes.push("visible");
+    /** @type {string} */
+    let prefix, suffix;
+    if (visible + displayed > 1) {
+        throw new HootDomError(
+            `cannot use more than one visibility modifier ('visible' implies 'displayed')`
+        );
     }
-    if (displayed) {
-        if (visible) {
-            throw new HootDomError(
-                `cannot use both 'visible' and 'displayed' ('visible' always implies 'displayed')`
-            );
-        }
+    if (viewPort) {
+        nodes = nodes.filter(isNodeInViewPort);
+        suffix = "in viewport";
+    } else if (visible) {
+        nodes = nodes.filter(isNodeVisible);
+        prefix = "visible";
+    } else if (displayed) {
         nodes = nodes.filter(isNodeDisplayed);
-        prefixes.push("displayed");
+        prefix = "displayed";
     }
 
     const count = nodes.length;
     if ($isInteger(exact) && count !== exact) {
         const s = count === 1 ? "" : "s";
-        const strPrefix = prefixes.length ? ` ${and(prefixes)}` : "";
+        const strPrefix = prefix ? `${prefix} ` : "";
+        const strSuffix = suffix ? ` ${suffix}` : "";
         const strSelector = typeof target === "string" ? `(selector: "${target}")` : "";
         throw new HootDomError(
-            `found ${count}${strPrefix} node${s} instead of ${exact} ${strSelector}`
+            `found ${count} ${strPrefix}node${s}${strSuffix} instead of ${exact} ${strSelector}`
         );
     }
 
@@ -1718,7 +1762,7 @@ export function queryAllProperties(target, property, options) {
  * @returns {DOMRect[]}
  */
 export function queryAllRects(target, options) {
-    return queryAll(target, options).map(getNodeRect);
+    return queryAll(...arguments).map(getNodeRect);
 }
 
 /**
@@ -1730,7 +1774,7 @@ export function queryAllRects(target, options) {
  * @returns {string[]}
  */
 export function queryAllTexts(target, options) {
-    return queryAll(target, options).map((node) => getNodeText(node, options));
+    return queryAll(...arguments).map((node) => getNodeText(node, options));
 }
 
 /**
@@ -1742,7 +1786,7 @@ export function queryAllTexts(target, options) {
  * @returns {NodeValue[]}
  */
 export function queryAllValues(target, options) {
-    return queryAll(target, options).map(getNodeValue);
+    return queryAll(...arguments).map(getNodeValue);
 }
 
 /**
@@ -1754,19 +1798,7 @@ export function queryAllValues(target, options) {
  * @returns {Element | null}
  */
 export function queryFirst(target, options) {
-    return queryAll(target, options)[0] || null;
-}
-
-/**
- * Performs a {@link queryAll} with the given arguments and returns the last result
- * or `null`.
- *
- * @param {Target} target
- * @param {QueryOptions} options
- * @returns {Element | null}
- */
-export function queryLast(target, options) {
-    return queryAll(target, options).at(-1) || null;
+    return queryAll(...arguments)[0] || null;
 }
 
 /**
@@ -1788,7 +1820,7 @@ export function queryOne(target, options) {
             `cannot call \`queryOne\` with 'exact'=${options.exact}: did you mean to use \`queryAll\`?`
         );
     }
-    return queryAll(target, { exact: 1, ...options })[0];
+    return queryAll(target, { ...options, exact: 1 })[0];
 }
 
 /**
@@ -1805,7 +1837,7 @@ export function queryOne(target, options) {
  * @returns {DOMRect}
  */
 export function queryRect(target, options) {
-    return getNodeRect(queryOne(target, options), options);
+    return getNodeRect(queryOne(...arguments), options);
 }
 
 /**
@@ -1817,7 +1849,7 @@ export function queryRect(target, options) {
  * @returns {string}
  */
 export function queryText(target, options) {
-    return getNodeText(queryOne(target, options), options);
+    return getNodeText(queryOne(...arguments), options);
 }
 
 /**
@@ -1829,78 +1861,33 @@ export function queryText(target, options) {
  * @returns {NodeValue}
  */
 export function queryValue(target, options) {
-    return getNodeValue(queryOne(target, options));
-}
-
-/**
- * @param {string} pseudoClass
- * @param {PseudoClassPredicateBuilder} predicate
- */
-export function registerPseudoClass(pseudoClass, predicate) {
-    if (customPseudoClasses.has(pseudoClass)) {
-        throw new HootDomError(`cannot register pseudo-class: '${pseudoClass}' already exists`);
-    }
-    customPseudoClasses.set(pseudoClass, predicate);
-    rCustomPseudoClass = compilePseudoClassRegex();
-}
-
-/**
- * @param {number} width
- * @param {number} height
- */
-export function setDimensions(width, height) {
-    const defaultRoot = getDefaultRoot();
-    if (!$isNaN(width)) {
-        currentDimensions.width = width;
-        defaultRoot.style?.setProperty("width", `${width}px`, "important");
-    }
-    if (!$isNaN(height)) {
-        currentDimensions.height = height;
-        defaultRoot.style?.setProperty("height", `${height}px`, "important");
-    }
-}
-
-/**
- * @param {Node} node
- * @param {{ object?: boolean }} [options]
- * @returns {string | string[]}
- */
-export function toSelector(node, options) {
-    const parts = {
-        tag: node.nodeName.toLowerCase(),
-    };
-    if (node.id) {
-        parts.id = `#${node.id}`;
-    }
-    if (node.classList?.length) {
-        parts.class = `.${[...node.classList].join(".")}`;
-    }
-    return options?.object ? parts : $values(parts).join("");
+    return getNodeValue(queryOne(...arguments));
 }
 
 /**
  * Combination of {@link queryAll} and {@link waitUntil}: waits for a given target
  * to match elements in the DOM and returns the first matching node when it appears
- * (or immediatlly if it is already present).
+ * (or immediately if it is already present).
  *
  * @see {@link queryAll}
  * @see {@link waitUntil}
  * @param {Target} target
  * @param {QueryOptions & WaitOptions} [options]
- * @returns {Promise<Element>}
+ * @returns {Deferred<Element>}
  * @example
  *  const button = await waitFor(`button`);
  *  button.click();
  */
 export function waitFor(target, options) {
-    return waitUntil(() => queryFirst(target, options), {
+    return waitUntil(() => queryFirst(...arguments), {
         message: `Could not find elements matching "${target}" within %timeout% milliseconds`,
         ...options,
     });
 }
 
 /**
- * Opposite of {@link waitFor}: waits for a given target to disappear from the DOM.
+ * Opposite of {@link waitFor}: waits for a given target to disappear from the DOM
+ * (resolves instantly if the selector is already missing).
  *
  * @see {@link waitFor}
  * @param {Target} target
@@ -1913,7 +1900,7 @@ export function waitForNone(target, options) {
     let count = 0;
     return waitUntil(
         () => {
-            count = queryAll(target, options).length;
+            count = queryAll(...arguments).length;
             return !count;
         },
         {
@@ -1922,56 +1909,4 @@ export function waitForNone(target, options) {
             ...options,
         }
     );
-}
-
-/**
- * Returns a promise fulfilled when the given `predicate` returns a truthy value,
- * with the value of the promise being the return value of the `predicate`.
- *
- * The `predicate` is run once initially and then each time the DOM is mutated (see
- * {@link observe} for more information).
- *
- * The promise automatically rejects after a given `timeout` (defaults to 5 seconds).
- *
- * @template T
- * @param {() => T} predicate
- * @param {WaitOptions} [options]
- * @returns {Promise<T>}
- * @example
- *  await waitUntil(() => []); // -> []
- * @example
- *  const button = await waitUntil(() => document.querySelector("button"));
- *  button.click();
- */
-export async function waitUntil(predicate, options) {
-    const result = predicate();
-    if (result) {
-        return result;
-    }
-
-    let handle;
-    let timeoutId;
-    return new Promise((resolve, reject) => {
-        const runCheck = () => {
-            const result = predicate();
-            if (result) {
-                resolve(result);
-            } else {
-                handle = requestAnimationFrame(runCheck);
-            }
-        };
-
-        const timeout = $floor(options?.timeout ?? 200);
-        timeoutId = setTimeout(() => {
-            let message = options?.message || `'waitUntil' timed out after %timeout% milliseconds`;
-            if (typeof message === "function") {
-                message = message();
-            }
-            reject(new HootDomError(message.replace("%timeout%", String(timeout))));
-        }, timeout);
-        handle = requestAnimationFrame(runCheck);
-    }).finally(() => {
-        cancelAnimationFrame(handle);
-        clearTimeout(timeoutId);
-    });
 }

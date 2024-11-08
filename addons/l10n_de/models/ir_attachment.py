@@ -14,12 +14,13 @@ class IrAttachment(models.Model):
         audit_trail_attachments = self.filtered(lambda attachment:
             attachment.res_model == 'account.move'
             and attachment.res_id
+            and attachment.raw
             and guess_mimetype(attachment.raw) in (
                 'application/pdf',
                 'application/xml',
             )
         )
-        id2move = self.env['account.move'].browse(audit_trail_attachments.mapped('res_id')).exists().grouped('id')
+        id2move = self.env['account.move'].browse(set(audit_trail_attachments.mapped('res_id'))).exists().grouped('id')
         for attachment in audit_trail_attachments:
             move = id2move.get(attachment.res_id)
             if move and move.posted_before and move.country_code == 'DE':

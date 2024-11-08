@@ -159,7 +159,7 @@ const FormEditor = options.Class.extend({
      */
     _getDefaultFormat: function () {
         return {
-            labelWidth: this.$target[0].querySelector('.s_website_form_label').style.width,
+            labelWidth: this.$target[0].querySelector('.s_website_form_label')?.style.width || "200px",
             labelPosition: 'left',
             multiPosition: 'horizontal',
             requiredMark: this._isRequiredMark(),
@@ -613,6 +613,7 @@ options.registry.WebsiteFormEditor = FormEditor.extend({
                             reject();
                         },
                     });
+                    resolve();
                 },
                 cancel: () => resolve(),
             });
@@ -1164,7 +1165,21 @@ options.registry.WebsiteFieldEditor = FieldEditor.extend({
      * Apply the we-list on the target and rebuild the input(s)
      */
     renderListItems: async function (previewMode, value, params) {
-        const valueList = JSON.parse(value);
+        let valueList = JSON.parse(value);
+        if (this._getSelect()) {
+            // Default entry only for fields rendered as select.
+            // Remove previous default.
+            valueList = valueList.filter(value => value.id !== "" || value.display_name !== "");
+            // Add default in first position if no default value is set.
+            const hasDefault = valueList.some(value => value.selected);
+            if (valueList.length && !hasDefault) {
+                valueList.unshift({
+                    id: "",
+                    display_name: "",
+                    selected: true,
+                });
+            }
+        }
 
         // Synchronize the possible values with the fields whose visibility
         // depends on the current field
@@ -1258,7 +1273,13 @@ options.registry.WebsiteFieldEditor = FieldEditor.extend({
             case 'toggleRequired':
                 return this.$target[0].classList.contains(params.activeValue) ? params.activeValue : 'false';
             case 'renderListItems':
-                return JSON.stringify(this._getListItems());
+                // TODO In master use a parameter.
+                this.__getListItems_forWidgetState = true;
+                try {
+                    return JSON.stringify(this._getListItems());
+                } finally {
+                    delete this.__getListItems_forWidgetState;
+                }
             case 'setVisibilityDependency':
                 return this.$target[0].dataset.visibilityDependency || '';
         }
@@ -1600,6 +1621,15 @@ options.registry.WebsiteFieldEditor = FieldEditor.extend({
         let options = [];
         if (select) {
             options = [...select.querySelectorAll('option')];
+            if (
+                this.__getListItems_forWidgetState &&
+                options.length &&
+                options[0].value === "" &&
+                options[0].textContent === "" &&
+                options[0].selected === true
+            ) {
+                options.shift();
+            }
         } else if (multipleInputs) {
             options = [...multipleInputs.querySelectorAll('.checkbox input, .radio input')];
         }

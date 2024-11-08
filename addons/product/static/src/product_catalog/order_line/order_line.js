@@ -13,6 +13,14 @@ export class ProductCatalogOrderLine extends Component {
         warning: { type: String, optional: true},
     };
 
+    /**
+     * Focus input text when clicked
+     * @param {Event} ev 
+     */
+    _onFocus(ev) {
+        ev.target.select();
+    }
+
     //--------------------------------------------------------------------------
     // Private
     //--------------------------------------------------------------------------
@@ -38,5 +46,9 @@ export class ProductCatalogOrderLine extends Component {
         const digits = [false, this.env.precision];
         const options = { digits, decimalPoint: ".", thousandsSep: "" };
         return parseFloat(formatFloat(this.props.quantity, options));
+    }
+
+    get showPrice() {
+        return true;
     }
 }

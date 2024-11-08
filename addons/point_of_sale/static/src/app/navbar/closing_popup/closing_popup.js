@@ -118,7 +118,7 @@ export class ClosePosPopup extends Component {
     getDifference(paymentId) {
         const counted = this.state.payments[paymentId].counted;
         if (!this.env.utils.isValidFloat(counted)) {
-            return NaN;
+            return null;
         }
         const expectedAmount =
             paymentId === this.props.default_cash_details?.id
@@ -248,14 +248,11 @@ export class ClosePosPopup extends Component {
                     this.closeSession();
                 }
             },
+            dismiss: async () => {},
         });
 
         if (response.redirect) {
             this.pos.redirectToBackend();
         }
-    }
-    getMovesTotalAmount() {
-        const amounts = this.props.default_cash_details.moves.map((move) => move.amount);
-        return amounts.reduce((acc, x) => acc + x, 0);
     }
 }

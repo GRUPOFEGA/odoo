@@ -229,11 +229,6 @@ class IrActions(models.Model):
         """
         self.ensure_one()
         readable_fields = self._get_readable_fields()
-        if (self.sudo().type == "ir.actions.act_window"):
-            result = self.sudo().read()[0]
-            embedded_actions = self.env["ir.embedded.actions"].browse(result["embedded_action_ids"]).read()
-            result.update({"embedded_action_ids": embedded_actions})
-            return result
         return {
             field: value
             for field, value in self.sudo().read()[0].items()
@@ -384,6 +379,18 @@ class IrActionsActWindow(models.Model):
             # this is used by frontend, with the document layout wizard before send and print
             "close_on_report_download",
         }
+
+    def _get_action_dict(self):
+        """ Override to return action content with detailed embedded actions data if available.
+
+            :return: A dict with updated action dictionary including embedded actions information.
+        """
+        result = super()._get_action_dict()
+        if embedded_action_ids := result["embedded_action_ids"]:
+            EmbeddedActions = self.env["ir.embedded.actions"]
+            embedded_fields = EmbeddedActions._get_readable_fields()
+            result["embedded_action_ids"] = EmbeddedActions.browse(embedded_action_ids).read(embedded_fields)
+        return result
 
 
 VIEW_TYPES = [
@@ -875,16 +882,14 @@ class IrActionsServer(models.Model):
 
         If applicable, link active_id.<self.link_field_id> to the new record.
         """
-        res = {'name': self.value}
-
-        res = self.env[self.crud_model_id.model].create(res)
+        res_id, _res_name = self.env[self.crud_model_id.model].name_create(self.value)
 
         if self.link_field_id:
             record = self.env[self.model_id.model].browse(self._context.get('active_id'))
             if self.link_field_id.ttype in ['one2many', 'many2many']:
-                record.write({self.link_field_id.name: [Command.link(res.id)]})
+                record.write({self.link_field_id.name: [Command.link(res_id)]})
             else:
-                record.write({self.link_field_id.name: res.id})
+                record.write({self.link_field_id.name: res_id})
 
     def _get_eval_context(self, action=None):
         """ Prepare the context used when evaluating python code, like the

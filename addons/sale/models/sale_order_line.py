@@ -1,7 +1,5 @@
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
-import re
-
 from collections import defaultdict
 from datetime import timedelta
 
@@ -545,7 +543,7 @@ class SaleOrderLine(models.Model):
 
         pricelist_price = self._get_pricelist_price()
 
-        if not self.pricelist_item_id or not self.pricelist_item_id._is_percentage():
+        if not self.pricelist_item_id or not self.pricelist_item_id._show_discount():
             # No pricelist rule found => no discount from pricelist
             return pricelist_price
 
@@ -613,19 +611,17 @@ class SaleOrderLine(models.Model):
 
     @api.depends('product_id', 'product_uom', 'product_uom_qty')
     def _compute_discount(self):
+        discount_enabled = self.env['product.pricelist.item']._is_discount_feature_enabled()
         for line in self:
             if not line.product_id or line.display_type:
                 line.discount = 0.0
 
-            if not (
-                line.order_id.pricelist_id
-                and line.pricelist_item_id._is_percentage()
-            ):
+            if not (line.order_id.pricelist_id and discount_enabled):
                 continue
 
             line.discount = 0.0
 
-            if not line.pricelist_item_id:
+            if not (line.pricelist_item_id and line.pricelist_item_id._show_discount()):
                 # No pricelist rule was found for the product
                 # therefore, the pricelist didn't apply any discount/change
                 # to the existing sales price.
@@ -1176,17 +1172,10 @@ class SaleOrderLine(models.Model):
         """
         self.ensure_one()
 
-        # Compatibility fix for creating invoices from a SO since the computation of the line name has been changed in the account module.
-        # Has to be removed as soon as the new behavior for the line name has been implemented in the sale module.
-        line_name = self.name
-        if self.product_id.display_name:
-            line_name = re.sub(re.escape(self.product_id.display_name), '', line_name)
-            line_name = re.sub(r'^\n', '', line_name)
-            line_name = re.sub(r'(?<=\n) ', '', line_name)
         res = {
             'display_type': self.display_type or 'product',
             'sequence': self.sequence,
-            'name': line_name,
+            'name': self.env['account.move.line']._get_journal_items_full_name(self.name, self.product_id.display_name),
             'product_id': self.product_id.id,
             'product_uom_id': self.product_uom.id,
             'quantity': self.qty_to_invoice,
@@ -1197,8 +1186,9 @@ class SaleOrderLine(models.Model):
             'is_downpayment': self.is_downpayment,
         }
         self._set_analytic_distribution(res, **optional_values)
-        if self.is_downpayment:
-            res['account_id'] = self.invoice_lines.filtered('is_downpayment').account_id[:1].id
+        downpayment_lines = self.invoice_lines.filtered('is_downpayment')
+        if self.is_downpayment and downpayment_lines:
+            res['account_id'] = downpayment_lines.account_id[:1].id
         if optional_values:
             res.update(optional_values)
         if self.display_type:
@@ -1346,3 +1336,13 @@ class SaleOrderLine(models.Model):
 
     def has_valued_move_ids(self):
         return self.move_ids
+
+    def _sellable_lines_domain(self):
+        discount_products_ids = self.env.companies.sale_discount_product_id.ids
+        domain = [('is_downpayment', '=', False)]
+        if discount_products_ids:
+            domain = expression.AND([
+                domain,
+                [('product_id', 'not in', discount_products_ids)],
+            ])
+        return domain

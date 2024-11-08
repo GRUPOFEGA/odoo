@@ -176,6 +176,8 @@ addons/spreadsheet/static/src/o_spreadsheet/o_spreadsheet.js
 !addons/hr/**/*
 !addons/hr_holidays
 !addons/hr_holidays/**/*
+!addons/hr_skills
+!addons/hr_skills/**/*
 !addons/im_livechat
 !addons/im_livechat/**/*
 !addons/mail
@@ -190,6 +192,8 @@ addons/spreadsheet/static/src/o_spreadsheet/o_spreadsheet.js
 !approvals/**/*
 !test_discuss_full_enterprise
 !test_discuss_full_enterprise/**/*
+!whatsapp
+!whatsapp/**/*
 
 # Whitelist point_of_sale
 !addons/point_of_sale

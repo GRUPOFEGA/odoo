@@ -6,6 +6,7 @@ import * as TicketScreen from "@point_of_sale/../tests/tours/utils/ticket_screen
 import * as PosSale from "@pos_sale/../tests/tours/utils/pos_sale_utils";
 import * as Dialog from "@point_of_sale/../tests/tours/utils/dialog_util";
 import * as Order from "@point_of_sale/../tests/tours/utils/generic_components/order_widget_util";
+import * as Utils from "@point_of_sale/../tests/tours/utils/common";
 import { registry } from "@web/core/registry";
 
 registry.category("web_tour.tours").add("PosSettleOrder", {
@@ -67,7 +68,7 @@ registry.category("web_tour.tours").add("PosRefundDownpayment", {
     steps: () =>
         [
             Dialog.confirm("Open session"),
-            PosSale.downPaymentFirstOrder(),
+            PosSale.downPaymentFirstOrder("+10"),
             ProductScreen.clickPayButton(),
             PaymentScreen.clickPaymentMethod("Cash"),
             PaymentScreen.clickValidate(),
@@ -161,5 +162,168 @@ registry.category("web_tour.tours").add("PosSettleAndInvoiceOrder", {
             PaymentScreen.clickPaymentMethod("Bank"),
             PaymentScreen.clickInvoiceButton(),
             PaymentScreen.clickValidate(),
+        ].flat(),
+});
+
+registry.category("web_tour.tours").add("PosOrderDoesNotRemainInList", {
+    test: true,
+    url: "/pos/ui",
+    steps: () =>
+        [
+            Dialog.confirm("Open session"),
+            PosSale.settleNthOrder(1),
+            ProductScreen.clickPayButton(),
+            PaymentScreen.clickPaymentMethod("Bank"),
+            PaymentScreen.clickValidate(),
+            ReceiptScreen.clickNextOrder(),
+            PosSale.checkOrdersListEmpty(),
+        ].flat(),
+});
+
+registry.category("web_tour.tours").add("PosSettleDraftOrder", {
+    test: true,
+    url: "/pos/ui",
+    steps: () =>
+        [
+            Dialog.confirm("Open session"),
+            PosSale.settleNthOrder(1),
+            ProductScreen.selectedOrderlineHas("Test service product", "1.00", "50.00"),
+        ].flat(),
+});
+
+registry.category("web_tour.tours").add("PosSettleCustomPrice", {
+    test: true,
+    url: "/pos/ui",
+    steps: () =>
+        [
+            Dialog.confirm("Open session"),
+            PosSale.settleNthOrder(1),
+            ProductScreen.selectedOrderlineHas("Product A", "1", "100"),
+            ProductScreen.clickPartnerButton(),
+            ProductScreen.clickCustomer("Test Partner AAA"),
+            ProductScreen.selectedOrderlineHas("Product A", "1", "100"),
+        ].flat(),
+});
+
+registry.category("web_tour.tours").add("PoSSaleOrderWithDownpayment", {
+    test: true,
+    steps: () =>
+        [
+            Dialog.confirm("Open session"),
+            PosSale.settleNthOrder(1),
+            ProductScreen.selectedOrderlineHas("Down Payment (POS)", "1.00", "20.00"),
+            ProductScreen.totalAmountIs(980.0),
+        ].flat(),
+});
+
+registry.category("web_tour.tours").add("PoSDownPaymentLinesPerTax", {
+    test: true,
+    steps: () =>
+        [
+            Dialog.confirm("Open session"),
+            PosSale.downPaymentFirstOrder("+20"),
+            Order.hasLine({
+                productName: "Down Payment",
+                quantity: "1.0",
+                price: "2.20",
+            }),
+            Order.hasLine({
+                productName: "Down Payment",
+                quantity: "1.0",
+                price: "1.00",
+            }),
+            Order.hasLine({
+                productName: "Down Payment",
+                quantity: "1.0",
+                price: "3.00",
+            }),
+            ProductScreen.clickPayButton(),
+            PaymentScreen.clickPaymentMethod("Bank"),
+            PaymentScreen.clickInvoiceButton(),
+            PaymentScreen.clickValidate(),
+            ReceiptScreen.isShown(),
+        ].flat(),
+});
+
+registry.category("web_tour.tours").add("PoSApplyDownpayment", {
+    test: true,
+    steps: () =>
+        [
+            Dialog.confirm("Open session"),
+            PosSale.downPaymentFirstOrder("+10"),
+            ProductScreen.clickPayButton(),
+            PaymentScreen.clickPaymentMethod("Bank"),
+            PaymentScreen.clickValidate(),
+        ].flat(),
+});
+
+registry.category("web_tour.tours").add("PosShipLaterNoDefault", {
+    test: true,
+    steps: () =>
+        [
+            Dialog.confirm("Open session"),
+            PosSale.settleNthOrder(1),
+            ProductScreen.clickPayButton(),
+            PaymentScreen.isShown(),
+            Utils.negateStep(PaymentScreen.shippingLaterHighlighted()),
+        ].flat(),
+});
+
+registry.category("web_tour.tours").add("PosSaleTeam", {
+    test: true,
+    steps: () =>
+        [
+            Dialog.confirm("Open session"),
+            ProductScreen.clickDisplayedProduct("Test Product"),
+            ProductScreen.totalAmountIs("100.00"),
+            ProductScreen.clickPayButton(),
+            PaymentScreen.clickPaymentMethod("Bank"),
+            PaymentScreen.clickValidate(),
+        ].flat(),
+});
+
+registry.category("web_tour.tours").add("PosOrdersListDifferentCurrency", {
+    test: true,
+    steps: () =>
+        [
+            Dialog.confirm("Open session"),
+            ProductScreen.clickControlButton("Quotation/Order"),
+            {
+                content: "Check that no orders are displayed",
+                trigger: '.o_nocontent_help p:contains("No record found")',
+            },
+        ].flat(),
+});
+
+registry.category("web_tour.tours").add("PoSDownPaymentAmount", {
+    test: true,
+    steps: () =>
+        [
+            Dialog.confirm("Open session"),
+            PosSale.downPaymentFirstOrder("+20"),
+            Order.hasLine({
+                productName: "Down Payment",
+                quantity: "1.0",
+                price: "20.0",
+            }),
+            ProductScreen.clickPayButton(),
+            PaymentScreen.clickPaymentMethod("Cash"),
+            PaymentScreen.clickValidate(),
+        ].flat(),
+});
+
+registry.category("web_tour.tours").add("PoSDownPaymentLinesPerFixedTax", {
+    test: true,
+    steps: () =>
+        [
+            Dialog.confirm("Open session"),
+            PosSale.downPaymentFirstOrder("+20"),
+            Order.hasLine({
+                productName: "Down Payment",
+                quantity: "1.0",
+                price: "22",
+            }),
+            Order.hasNoTax(),
+            ProductScreen.totalAmountIs(22.0),
         ].flat(),
 });

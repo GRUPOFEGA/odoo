@@ -16,9 +16,9 @@ export class Attachment extends FileModelMixin(Record) {
     static insert(data) {
         return super.insert(...arguments);
     }
-    static new(data) {
+    static new() {
         /** @type {import("models").Attachment} */
-        const attachment = super.new(data);
+        const attachment = super.new(...arguments);
         Record.onChange(attachment, ["extension", "filename"], () => {
             if (!attachment.extension && attachment.filename) {
                 attachment.extension = attachment.filename.split(".").pop();
@@ -32,6 +32,10 @@ export class Attachment extends FileModelMixin(Record) {
     message = Record.one("Message");
     /** @type {luxon.DateTime} */
     create_date = Record.attr(undefined, { type: "datetime" });
+    /** @type {string} */
+    type;
+    /** @type {string} */
+    url;
 
     get isDeletable() {
         return true;
@@ -42,6 +46,10 @@ export class Attachment extends FileModelMixin(Record) {
             return undefined;
         }
         return `${this.create_date.monthLong}, ${this.create_date.year}`;
+    }
+
+    get uploading() {
+        return this.id < 0;
     }
 
     /** Remove the given attachment globally. */

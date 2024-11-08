@@ -116,7 +116,7 @@ class HrEmployeePrivate(models.Model):
     emergency_contact = fields.Char("Contact Name", groups="hr.group_hr_user", tracking=True)
     emergency_phone = fields.Char("Contact Phone", groups="hr.group_hr_user", tracking=True)
     distance_home_work = fields.Integer(string="Home-Work Distance", groups="hr.group_hr_user", tracking=True)
-    km_home_work = fields.Integer(string="Home-Work Distance in Km", groups="hr.group_hr_user", compute="_compute_km_home_work", store=True)
+    km_home_work = fields.Integer(string="Home-Work Distance in Km", groups="hr.group_hr_user", compute="_compute_km_home_work", inverse="_inverse_km_home_work", store=True)
     distance_home_work_unit = fields.Selection([
         ('kilometers', 'km'),
         ('miles', 'mi'),
@@ -239,6 +239,10 @@ class HrEmployeePrivate(models.Model):
     def _compute_km_home_work(self):
         for employee in self:
             employee.km_home_work = employee.distance_home_work * 1.609 if employee.distance_home_work_unit == "miles" else employee.distance_home_work
+
+    def _inverse_km_home_work(self):
+        for employee in self:
+            employee.distance_home_work = employee.km_home_work / 1.609 if employee.distance_home_work_unit == "miles" else employee.distance_home_work
 
     def _get_partner_count_depends(self):
         return ['user_id']
@@ -398,7 +402,7 @@ class HrEmployeePrivate(models.Model):
         else:
             self_sudo = self
 
-        if self_sudo.check_access_rights('read', raise_exception=False):
+        if self_sudo.env.user.has_group('hr.group_hr_user'):
             return super(HrEmployeePrivate, self).get_formview_id(access_uid=access_uid)
         # Hardcode the form view for public employee
         return self.env.ref('hr.hr_employee_public_view_form').id
@@ -411,7 +415,7 @@ class HrEmployeePrivate(models.Model):
         else:
             self_sudo = self
 
-        if not self_sudo.check_access_rights('read', raise_exception=False):
+        if not self_sudo.env.user.has_group('hr.group_hr_user'):
             res['res_model'] = 'hr.employee.public'
 
         return res
@@ -656,7 +660,7 @@ class HrEmployeePrivate(models.Model):
         ]
 
     def _load_scenario(self):
-        demo_tag = self.env.ref('hr_appraisal.employee_category_demo', raise_if_not_found=False)
+        demo_tag = self.env.ref('hr.employee_category_demo', raise_if_not_found=False)
         if demo_tag:
             return
         convert.convert_file(self.env, 'hr', 'data/scenarios/hr_scenario.xml', None, mode='init', kind='data')

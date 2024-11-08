@@ -617,6 +617,27 @@ test("Can insert odoo chart from a different model", async () => {
     expect(model.getters.getChartIds(sheetId).length).toBe(1);
 });
 
+test("Odoo chart legend color changes with background color update", async () => {
+    const { model } = await createSpreadsheetWithChart({ type: "odoo_bar" });
+    const sheetId = model.getters.getActiveSheetId();
+    const chartId = model.getters.getChartIds(sheetId)[0];
+    const definition = model.getters.getChartDefinition(chartId);
+    expect(
+        model.getters.getChartRuntime(chartId).chartJsConfig.options.plugins.legend.labels.color
+    ).toBe("#000000");
+    model.dispatch("UPDATE_CHART", {
+        definition: {
+            ...definition,
+            background: "#000000",
+        },
+        id: chartId,
+        sheetId,
+    });
+    expect(
+        model.getters.getChartRuntime(chartId).chartJsConfig.options.plugins.legend.labels.color
+    ).toBe("#FFFFFF");
+});
+
 test("Remove odoo chart when sheet is deleted", async () => {
     const { model } = await createSpreadsheetWithChart({ type: "odoo_line" });
     const sheetId = model.getters.getActiveSheetId();
@@ -627,4 +648,21 @@ test("Remove odoo chart when sheet is deleted", async () => {
     expect(model.getters.getOdooChartIds().length).toBe(1);
     model.dispatch("DELETE_SHEET", { sheetId });
     expect(model.getters.getOdooChartIds().length).toBe(0);
+});
+
+test("Show values is taken into account in the runtime", async () => {
+    const { model } = await createSpreadsheetWithChart({ type: "odoo_bar" });
+    const sheetId = model.getters.getActiveSheetId();
+    const chartId = model.getters.getChartIds(sheetId)[0];
+    const definition = model.getters.getChartDefinition(chartId);
+    model.dispatch("UPDATE_CHART", {
+        definition: {
+            ...definition,
+            showValues: true,
+        },
+        id: chartId,
+        sheetId,
+    });
+    const runtime = model.getters.getChartRuntime(chartId);
+    expect(runtime.chartJsConfig.options.plugins.chartShowValuesPlugin.showValues).toBe(true);
 });

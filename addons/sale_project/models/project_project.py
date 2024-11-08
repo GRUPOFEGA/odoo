@@ -1,21 +1,33 @@
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
+import ast
 import json
 from collections import defaultdict
 
 from odoo import api, fields, models, _, _lt
 from odoo.osv import expression
 from odoo.tools import Query, SQL
+from odoo.tools.misc import unquote
 
 
 class ProjectProject(models.Model):
     _inherit = 'project.project'
 
+    def _domain_sale_line_id(self):
+        domain = expression.AND([
+            self.env['sale.order.line']._sellable_lines_domain(),
+            self.env['sale.order.line']._domain_sale_line_service(),
+            [
+                ('order_partner_id', '=?', unquote("partner_id")),
+            ],
+        ])
+        return domain
+
     allow_billable = fields.Boolean("Billable")
     sale_line_id = fields.Many2one(
         'sale.order.line', 'Sales Order Item', copy=False,
         compute="_compute_sale_line_id", store=True, readonly=False, index='btree_not_null',
-        domain=lambda self: self.env['sale.order.line']._domain_sale_line_service_str("[('order_partner_id', '=?', partner_id)]"),
+        domain=lambda self: str(self._domain_sale_line_id()),
         help="Sales order item that will be selected by default on the tasks and timesheets of this project,"
             " except if the employee set on the timesheets is explicitely linked to another sales order item on the project.\n"
             "It can be modified on each task and timesheet entry individually if necessary.")
@@ -131,6 +143,7 @@ class ProjectProject(models.Model):
                 'show_sale': True,
                 'link_to_project': self.id,
                 'form_view_ref': 'sale_project.sale_order_line_view_form_editable',  # Necessary for some logic in the form view
+                'action_view_sols': True,
                 'default_partner_id': self.partner_id.id,
                 'default_company_id': self.company_id.id,
                 'default_order_id': self.sale_order_id.id,
@@ -209,6 +222,11 @@ class ProjectProject(models.Model):
         if section_name in ['other_invoice_revenues', 'downpayments']:
             action = self.env["ir.actions.actions"]._for_xml_id("account.action_move_out_invoice_type")
             action['domain'] = domain if domain else []
+            action['context'] = {
+                **ast.literal_eval(action['context']),
+                'default_partner_id': self.partner_id.id,
+                'project_id': self.id,
+            }
             if res_id:
                 action['views'] = [(False, 'form')]
                 action['view_mode'] = 'form'
@@ -564,12 +582,14 @@ class ProjectProject(models.Model):
     def _get_revenues_items_from_invoices_domain(self, domain=None):
         if domain is None:
             domain = []
+        included_invoice_line_ids = self._get_already_included_profitability_invoice_line_ids()
         return expression.AND([
             domain,
             [('move_id.move_type', 'in', self.env['account.move'].get_sale_types()),
             ('parent_state', 'in', ['draft', 'posted']),
             ('price_subtotal', '!=', 0),
-            ('is_downpayment', '=', False)],
+            ('is_downpayment', '=', False),
+            ('id', 'not in', included_invoice_line_ids)],
         ])
 
     def _get_revenues_items_from_invoices(self, excluded_move_line_ids=None, with_action=True):
@@ -683,6 +703,9 @@ class ProjectProject(models.Model):
                 'number': self_sudo.sale_order_count,
                 'action_type': 'object',
                 'action': 'action_view_sos',
+                'additional_context': json.dumps({
+                    'create_for_project_id': self.id,
+                }),
                 'show': self_sudo.display_sales_stat_buttons and self_sudo.sale_order_count > 0,
                 'sequence': 27,
             })
@@ -766,7 +789,8 @@ class ProjectProject(models.Model):
             'views': [[False, 'tree'], [False, 'form'], [False, 'kanban']],
             'domain': [('id', 'in', vendor_bill_ids)],
             'context': {
-                'create': False,
+                'default_move_type': 'in_invoice',
+                'project_id': self.id,
             }
         }
         if len(vendor_bill_ids) == 1:

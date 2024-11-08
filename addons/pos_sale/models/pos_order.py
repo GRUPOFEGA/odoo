@@ -2,7 +2,7 @@
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
 from odoo import api, fields, models, _
-from odoo.tools import float_compare, float_is_zero
+from odoo.tools import float_compare, float_is_zero, format_date
 
 
 class PosOrder(models.Model):
@@ -19,7 +19,7 @@ class PosOrder(models.Model):
     @api.model
     def _complete_values_from_session(self, session, values):
         values = super(PosOrder, self)._complete_values_from_session(session, values)
-        values.setdefault('crm_team_id', session.config_id.crm_team_id.id)
+        values['crm_team_id'] = values['crm_team_id'] if values.get('crm_team_id') else session.config_id.crm_team_id.id
         return values
 
     @api.depends('date_order', 'company_id')
@@ -60,7 +60,11 @@ class PosOrder(models.Model):
                         self.env['sale.advance.payment.inv']._prepare_down_payment_section_values(sale_order_origin)
                     )
                 order_reference = line.name
-                sale_order_line_description = _("Down payment (ref: %(order_reference)s on \n %(date)s)", order_reference=order_reference, date=line.order_id.date_order.strftime('%m-%d-%y'))
+
+                if order.partner_id.lang and order.partner_id.lang != line.env.lang:
+                    line = line.with_context(lang=order.partner_id.lang)
+
+                sale_order_line_description = _("Down payment (ref: %(order_reference)s on \n %(date)s)", order_reference=order_reference, date=format_date(line.env, line.order_id.date_order))
                 sale_line = self.env['sale.order.line'].create({
                     'order_id': sale_order_origin.id,
                     'product_id': line.product_id.id,
@@ -98,8 +102,8 @@ class PosOrder(models.Model):
                     if float_compare(new_qty, 0, precision_rounding=stock_move.product_uom.rounding) <= 0:
                         new_qty = 0
                     stock_move.product_uom_qty = so_line.compute_uom_qty(new_qty, stock_move, False)
-                    #If the product is delivered with more than one step, we need to update the quantity of the other steps
-                    for move in so_line_stock_move_ids.filtered(lambda m: m.state in ['waiting', 'confirmed'] and m.product_id == stock_move.product_id):
+                    # If the product is delivered with more than one step, we need to update the quantity of the other steps
+                    for move in so_line_stock_move_ids.filtered(lambda m: m.state in ['waiting', 'confirmed', 'assigned'] and m.product_id == stock_move.product_id):
                         move.product_uom_qty = stock_move.product_uom_qty
                         waiting_picking_ids.add(move.picking_id.id)
                     waiting_picking_ids.add(picking.id)
@@ -111,6 +115,9 @@ class PosOrder(models.Model):
             for picking in self.env['stock.picking'].browse(waiting_picking_ids):
                 if all(is_product_uom_qty_zero(move) for move in picking.move_ids):
                     picking.action_cancel()
+                else:
+                    # We make sure that the original picking still has the correct quantity reserved
+                    picking.action_assign()
 
         return data
 
@@ -156,6 +163,11 @@ class PosOrder(models.Model):
 
         return inv_line_vals
 
+    def write(self, vals):
+        if 'crm_team_id' in vals:
+            vals['crm_team_id'] = vals['crm_team_id'] if vals.get('crm_team_id') else self.session_id.crm_team_id.id
+        return super().write(vals)
+
 class PosOrderLine(models.Model):
     _inherit = 'pos.order.line'
 
@@ -188,3 +200,10 @@ class PosOrderLine(models.Model):
         params = super()._load_pos_data_fields(config_id)
         params += ['sale_order_origin_id', 'sale_order_line_id', 'down_payment_details']
         return params
+
+    def _launch_stock_rule_from_pos_order_lines(self):
+        orders = self.mapped('order_id')
+        for order in orders:
+            for line in order.lines:
+                line.sale_order_line_id.move_ids.mapped("move_line_ids").unlink()
+        return super()._launch_stock_rule_from_pos_order_lines()

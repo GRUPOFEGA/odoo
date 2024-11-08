@@ -13,7 +13,7 @@
                     <t t-if="props.thread.loadOlder and !props.thread.isTransient and !props.thread.hasLoadingFailed" t-call="mail.Thread.loadOlder"/>
                     <t t-if="props.thread.hasLoadingFailed" t-call="mail.Thread.loadingError"/>
                 </t>
-                <span t-else="" t-ref="load-newer"/>
+                <span t-else="" t-ref="load-newer" style="height: 1px;"/>
                 <t t-set="messages" t-value="props.order === 'asc' ? props.thread.nonEmptyMessages : [...props.thread.nonEmptyMessages].reverse()"/>
                 <t t-if="state.mountedAndLoaded" t-foreach="messages" t-as="msg" t-key="msg.id">
                     <t t-set="prevMsg" t-value="messages[msg_index -1]"/>
@@ -22,15 +22,13 @@
                         <t t-set="currentDay" t-value="msg.dateDay"/>
                     </t>
                     <div t-if="msg.threadAsFirstUnread?.eq(props.thread)" class="o-mail-Thread-newMessage d-flex align-items-center fw-bolder z-1">
-                        <hr class="ms-2 flex-grow-1 border border-danger opacity-50"/><span class="px-2 text-danger">New messages</span><hr class="me-2 flex-grow-1 border border-danger opacity-50"/>
+                        <hr class="flex-grow-1 border-danger opacity-100"/><span class="ps-2 pe-1 bg-danger o-text-white rounded text-uppercase">New</span>
                     </div>
-                    <t t-if="msg.isNotification">
-                        <t t-call="mail.NotificationMessage"/>
-                    </t>
-                    <Message t-else=""
+                    <Message
                         className="getMessageClassName(msg)"
                         isInChatWindow="props.isInChatWindow"
                         message="msg"
+                        previousMessage="prevMsg"
                         registerMessageRef="registerMessageRef"
                         messageToReplyTo="props.messageToReplyTo"
                         squashed="isSquashed(msg, prevMsg)"
@@ -42,7 +40,7 @@
                         showDates="props.showDates"
                     />
                 </t>
-                <span t-if="props.order === 'asc'" t-ref="load-newer"/>
+                <span t-if="props.order === 'asc'" t-ref="load-newer" style="height: 1px;"/>
                 <t t-else="">
                     <t t-if="props.thread.loadOlder and !props.thread.isTransient and !props.thread.hasLoadingFailed" t-call="mail.Thread.loadOlder"/>
                     <t t-if="props.thread.hasLoadingFailed" t-call="mail.Thread.loadingError"/>
@@ -63,7 +61,7 @@
 <t t-name="mail.Thread.jumpPresent">
     <span t-if="props.showJumpPresent and state.showJumpPresent" t-att-class="{
         'm-0 px-4 position-sticky top-0': env.inChatter,
-    }" class="o-mail-Thread-banner o-mail-Thread-bannerHover d-flex d-print-none justify-content-between alert alert-primary border-0 rounded-0 mb-0 py-1 cursor-pointer shadow-sm small fw-bold" t-on-click="() => this.jumpToPresent()">
+    }" class="o-mail-Thread-banner o-mail-Thread-bannerHover d-flex d-print-none justify-content-between alert alert-secondary border-0 rounded-0 mb-0 py-1 cursor-pointer shadow-sm small fw-bold" t-on-click="() => this.jumpToPresent()">
         <span>You're viewing older messages</span>
         <span>Jump to Present<i class="ms-2 fa" t-att-class="{ 'fa-caret-up': props.order !== 'asc', 'fa-caret-down': props.order === 'asc' }"/></span>
     </span>
@@ -91,10 +89,9 @@
     </div>
 </t>
 
+<!-- @this {import("@mail/core/common/message"} -->
 <t t-name="mail.NotificationMessage">
-    <div class="o-mail-NotificationMessage text-break mx-auto text-500 small px-3 text-center" t-on-click="onClickNotification" t-att-class="{
-        'mt-1': prevMsg and !prevMsg.isNotification,
-    }" t-ref="root">
+    <div class="o-mail-NotificationMessage text-break mx-auto text-500 small px-3 text-center" t-on-click="onClickNotification" t-att-class="props.className" t-ref="root">
         <i t-if="msg.notificationIcon" t-attf-class="{{ msg.notificationIcon }} me-1"/>
         <span class="o-mail-NotificationMessage-author d-inline" t-if="msg.author and !msg.body.includes(escape(msg.author.name))" t-esc="msg.author.name"/> <t t-out="msg.body"/>
     </div>

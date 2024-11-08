@@ -7,6 +7,7 @@ import re
 from operator import itemgetter
 
 from odoo import api, Command, fields, models, modules, _
+from odoo.addons.bus.websocket import WebsocketConnectionHandler
 
 
 class ImLivechatChannel(models.Model):
@@ -66,7 +67,7 @@ class ImLivechatChannel(models.Model):
     @api.depends('user_ids.im_status')
     def _compute_available_operator_ids(self):
         for record in self:
-            record.available_operator_ids = record.user_ids.filtered(lambda user: user.im_status == 'online')
+            record.available_operator_ids = record.user_ids.filtered(lambda user: user._is_user_available())
 
     @api.depends('rule_ids.chatbot_script_id')
     def _compute_chatbot_script_count(self):
@@ -332,6 +333,7 @@ class ImLivechatChannel(models.Model):
         info['server_url'] = self.get_base_url()
         if info['available']:
             info['options'] = self._get_channel_infos()
+            info["options"]["websocket_worker_version"] = WebsocketConnectionHandler._VERSION
             info['options']['current_partner_id'] = (
                 self.env.user.partner_id.id if not self.env.user._is_public() else None
             )

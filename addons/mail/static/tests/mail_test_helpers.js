@@ -1,8 +1,8 @@
 import { busModels } from "@bus/../tests/bus_test_helpers";
 import { mailGlobal } from "@mail/utils/common/misc";
-import { after, before, getFixture } from "@odoo/hoot";
-import { hover as hootHover, resize } from "@odoo/hoot-dom";
-import { Component, onRendered, onWillDestroy, status } from "@odoo/owl";
+import { after, before, expect, getFixture } from "@odoo/hoot";
+import { hover as hootHover, queryFirst, resize } from "@odoo/hoot-dom";
+import { Component, onMounted, onPatched, onWillDestroy, status } from "@odoo/owl";
 import {
     MockServer,
     authenticate,
@@ -25,7 +25,11 @@ import { MEDIAS_BREAKPOINTS, utils as uiUtils } from "@web/core/ui/ui_service";
 import { useServiceProtectMethodHandling } from "@web/core/utils/hooks";
 import { session } from "@web/session";
 import { WebClient } from "@web/webclient/webclient";
-import { DISCUSS_ACTION_ID, authenticateGuest, mailDataHelpers } from "./mock_server/mail_mock_server";
+import {
+    DISCUSS_ACTION_ID,
+    authenticateGuest,
+    mailDataHelpers,
+} from "./mock_server/mail_mock_server";
 import { Base } from "./mock_server/mock_models/base";
 import { DEFAULT_MAIL_VIEW_ID } from "./mock_server/mock_models/constants";
 
@@ -59,6 +63,7 @@ import { ResUsers } from "./mock_server/mock_models/res_users";
 import { ResUsersSettings } from "./mock_server/mock_models/res_users_settings";
 import { ResUsersSettingsVolumes } from "./mock_server/mock_models/res_users_settings_volumes";
 
+import { Deferred } from "@odoo/hoot-mock";
 import { contains } from "./mail_test_helpers_contains";
 
 export { SIZES } from "@web/core/ui/ui_service";
@@ -319,6 +324,11 @@ export async function start(options) {
 export async function startServer() {
     const { env } = await makeMockServer();
     pyEnv = env;
+    pyEnv["res.users"].write([serverState.userId], {
+        groups_id: pyEnv["res.groups"]
+            .search_read([["id", "=", serverState.groupId]])
+            .map(({ id }) => id),
+    });
     return env;
 }
 
@@ -365,19 +375,20 @@ function getSizeFromWidth(width) {
  * @param {number|undefined} [params.width]
  * @param {number|undefined} [params.height]
  */
-export function patchUiSize({ height, size, width }) {
+export async function patchUiSize({ height, size, width }) {
     if ((!size && !width) || (size && width)) {
         throw new Error("Either size or width must be given to the patchUiSize function");
     }
     size = size === undefined ? getSizeFromWidth(width) : size;
     width = width || getWidthFromSize(size);
 
-    resize({ width, height });
     patchWithCleanup(uiUtils, {
         getSize() {
             return size;
         },
     });
+
+    await resize({ width, height });
 }
 
 /**
@@ -535,14 +546,16 @@ let nextObserveRenderResults = 0;
 export function prepareObserveRenders() {
     patchWithCleanup(Component.prototype, {
         setup(...args) {
-            onRendered(() => {
+            const cb = () => {
                 for (const result of observeRenderResults.values()) {
                     if (!result.has(this.constructor)) {
                         result.set(this.constructor, 0);
                     }
                     result.set(this.constructor, result.get(this.constructor) + 1);
                 }
-            });
+            };
+            onMounted(cb);
+            onPatched(cb);
             onWillDestroy(() => {
                 for (const result of observeRenderResults.values()) {
                     // owl could invoke onrendered and cancel immediately to re-render, so should compensate
@@ -578,19 +591,44 @@ export function observeRenders() {
 /**
  * Determine if the child element is in the view port of the parent.
  *
- * @param {HTMLElement} parent
- * @param {HTMLElement} child
+ * @param {string} childSelector
+ * @param {string} parentSelector
  */
-export function isInViewportOf(parent, child) {
-    const childRect = child.getBoundingClientRect();
-    const parentRect = parent.getBoundingClientRect();
-
-    return childRect.top <= parentRect.top
-        ? parentRect.top - childRect.top <= childRect.height
-        : childRect.bottom - parentRect.bottom <= childRect.height;
+export async function isInViewportOf(childSelector, parentSelector) {
+    await contains(parentSelector);
+    const inViewportDeferred = new Deferred();
+    const failTimeout = setTimeout(() => check({ crashOnFail: true }), 3000);
+    const check = ({ crashOnFail = false } = {}) => {
+        const parent = queryFirst(parentSelector);
+        const child = queryFirst(childSelector);
+        let alreadyInViewport = false;
+        if (parent && child) {
+            const childRect = child.getBoundingClientRect();
+            const parentRect = parent.getBoundingClientRect();
+            alreadyInViewport =
+                childRect.top <= parentRect.top
+                    ? parentRect.top - childRect.top <= childRect.height
+                    : childRect.bottom - parentRect.bottom <= childRect.height;
+        }
+        if (alreadyInViewport) {
+            clearTimeout(failTimeout);
+            expect(true).toBe(true, {
+                message: `Element ${childSelector} found in viewport of ${parentSelector}`,
+            });
+            inViewportDeferred.resolve();
+        } else if (crashOnFail) {
+            const failMsg = `Element ${childSelector} not found in viewport of ${parentSelector}`;
+            expect(false).toBe(true, { message: failMsg });
+            inViewportDeferred.reject(new Error(failMsg));
+        } else {
+            parent.addEventListener("scrollend", check, { once: true });
+        }
+    };
+    check();
+    return inViewportDeferred;
 }
 
 export async function hover(selector) {
     await contains(selector);
-    hootHover(selector);
+    await hootHover(selector);
 }

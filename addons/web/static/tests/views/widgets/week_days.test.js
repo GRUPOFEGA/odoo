@@ -11,13 +11,13 @@ import {
 } from "@web/../tests/web_test_helpers";
 
 class Partner extends models.Model {
-    sun = fields.Boolean({ string: "Sun" });
-    mon = fields.Boolean({ string: "Mon" });
-    tue = fields.Boolean({ string: "Tue" });
-    wed = fields.Boolean({ string: "Wed" });
-    thu = fields.Boolean({ string: "Thu" });
-    fri = fields.Boolean({ string: "Fri" });
-    sat = fields.Boolean({ string: "Sat" });
+    sun = fields.Boolean();
+    mon = fields.Boolean();
+    tue = fields.Boolean();
+    wed = fields.Boolean();
+    thu = fields.Boolean();
+    fri = fields.Boolean();
+    sat = fields.Boolean();
 
     _records = [
         {
@@ -66,25 +66,25 @@ test("simple week recurrence widget", async () => {
         message: "all inputs should be enabled in edit mode",
     });
 
-    click("td:nth-child(7) input");
+    await click("td:nth-child(7) input");
     expect("td:nth-child(7) input").toBeChecked({
         message: "sunday checkbox should be checked",
     });
 
     await clickSave();
 
-    click("td:nth-child(1) input");
+    await click("td:nth-child(1) input");
     expect("td:nth-child(1) input").toBeChecked({
         message: "monday checkbox should be checked",
     });
 
-    click("td:nth-child(2) input");
+    await click("td:nth-child(2) input");
     expect("td:nth-child(2) input").toBeChecked({
         message: "tuesday checkbox should be checked",
     });
 
     // uncheck Sunday checkbox and check write call
-    click("td:nth-child(7) input");
+    await click("td:nth-child(7) input");
     expect("td:nth-child(7) input").not.toBeChecked({
         message: "sunday checkbox should be unchecked",
     });

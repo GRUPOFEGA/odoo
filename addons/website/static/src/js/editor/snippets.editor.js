@@ -9,7 +9,7 @@ import wSnippetOptions from "@website/js/editor/snippets.options";
 import * as OdooEditorLib from "@web_editor/js/editor/odoo-editor/src/utils/utils";
 import { Component, onMounted, onWillStart, useEffect, useRef, useState } from "@odoo/owl";
 import { throttleForAnimation } from "@web/core/utils/timing";
-import { switchTextHighlight } from "@website/js/text_processing";
+import { applyTextHighlight, switchTextHighlight } from "@website/js/text_processing";
 import { registry } from "@web/core/registry";
 
 const snippetsEditorRegistry = registry.category("snippets_editor");
@@ -204,7 +204,7 @@ export class WebsiteSnippetsMenu extends weSnippetEditor.SnippetsMenu {
             for (const el of getFromEditable('.o_translation_without_style')) {
                 el.classList.remove('o_translation_without_style');
                 if (el.dataset.oeTranslationSaveSha) {
-                    el.dataset.oeTranslationInitialSha = el.dataset.oeTranslationSaveSha;
+                    el.dataset.oeTranslationSourceSha = el.dataset.oeTranslationSaveSha;
                     delete el.dataset.oeTranslationSaveSha;
                 }
             }
@@ -233,6 +233,12 @@ export class WebsiteSnippetsMenu extends weSnippetEditor.SnippetsMenu {
      */
     _computeSnippetTemplates(html) {
         const $html = $(html);
+
+        // TODO remove in master: changing the `data-apply-to` attribute of the
+        // grid spacing option so it is not applied on inner rows.
+        const gridSpacingOptionEls = html.querySelectorAll('[data-css-property="row-gap"], [data-css-property="column-gap"]');
+        gridSpacingOptionEls.forEach(gridSpacingOptionEl => gridSpacingOptionEl.dataset.applyTo = ".row.o_grid_mode");
+
         const toFind = $html.find("we-fontfamilypicker[data-variable]").toArray();
         const fontVariables = toFind.map((el) => el.dataset.variable);
         FontFamilyPickerUserValueWidget.prototype.fontVariables = fontVariables;
@@ -559,6 +565,16 @@ export class WebsiteSnippetsMenu extends weSnippetEditor.SnippetsMenu {
         $dropzone.attr('data-editor-sub-message', $hookParent.attr('data-editor-sub-message'));
         return $dropzone;
     }
+    /**
+     * @override
+     */
+    _updateDroppedSnippet($target) {
+        // Build the highlighted text content for the snippets.
+        for (const textEl of $target[0]?.querySelectorAll(".o_text_highlight") || []) {
+            applyTextHighlight(textEl);
+        }
+        return super._updateDroppedSnippet(...arguments);
+    }
 
     //--------------------------------------------------------------------------
     // Handlers
@@ -646,7 +662,8 @@ export class WebsiteSnippetsMenu extends weSnippetEditor.SnippetsMenu {
             HIGHLIGHTED_TEXT_SELECTOR,
             [
                 this._getOptionTextClass(HIGHLIGHTED_TEXT_SELECTOR),
-                "o_text_highlight_underline"
+                "o_text_highlight_underline",
+                "o_translate_inline",
             ],
             ($snippet) => {
                 // TODO should be reviewed

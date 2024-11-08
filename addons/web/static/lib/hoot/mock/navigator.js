@@ -1,6 +1,7 @@
 /** @odoo-module */
 
-import { createMock, makePublicListeners } from "../hoot_utils";
+import { createMock, HootError, makePublicListeners } from "../hoot_utils";
+import { getSyncValue, setSyncValue } from "./sync_values";
 
 /**
  * @typedef {"android" | "ios" | "linux" | "mac" | "windows"} Platform
@@ -11,6 +12,8 @@ import { createMock, makePublicListeners } from "../hoot_utils";
 //-----------------------------------------------------------------------------
 
 const {
+    Blob,
+    ClipboardItem,
     EventTarget,
     navigator,
     Object: { assign: $assign },
@@ -23,17 +26,24 @@ const { userAgent: $userAgent } = navigator;
 // Internal
 //-----------------------------------------------------------------------------
 
-const getUserAgentBrowser = () => {
-    if (/Firefox/i.test($userAgent)) {
-        return "Gecko/20100101 Firefox/1000.0"; // Firefox
-    }
-    if (/Chrome/i.test($userAgent)) {
-        return "AppleWebKit/1000.00 (KHTML, like Gecko) Chrome/1000.00 Safari/1000.00"; // Chrome
-    }
-    if (/Safari/i.test($userAgent)) {
-        return "AppleWebKit/1000.00 (KHTML, like Gecko) Version/1000.00 Safari/1000.00"; // Safari
-    }
-};
+const getBlobValue = (value) => (value instanceof Blob ? value.text() : value);
+
+/**
+ * Returns the final synchronous value of several item types.
+ *
+ * @param {unknown} value
+ * @param {string} type
+ */
+const getClipboardValue = (value, type) =>
+    getBlobValue(value instanceof ClipboardItem ? value.getType(type) : value);
+
+const getMockValues = () => ({
+    /** @type {typeof Navigator["prototype"]["sendBeacon"]} */
+    sendBeacon: throwNotImplemented("sendBeacon"),
+    userAgent: makeUserAgent("linux"),
+    /** @type {typeof Navigator["prototype"]["vibrate"]} */
+    vibrate: throwNotImplemented("vibrate"),
+});
 
 /**
  * @returns {Record<PermissionName, { name: string; state: PermissionState }>}
@@ -105,6 +115,18 @@ const getPermissions = () => ({
     },
 });
 
+const getUserAgentBrowser = () => {
+    if (/Firefox/i.test($userAgent)) {
+        return "Gecko/20100101 Firefox/1000.0"; // Firefox
+    }
+    if (/Chrome/i.test($userAgent)) {
+        return "AppleWebKit/1000.00 (KHTML, like Gecko) Chrome/1000.00 Safari/1000.00"; // Chrome
+    }
+    if (/Safari/i.test($userAgent)) {
+        return "AppleWebKit/1000.00 (KHTML, like Gecko) Version/1000.00 Safari/1000.00"; // Safari
+    }
+};
+
 /**
  * @param {Platform} platform
  */
@@ -143,11 +165,19 @@ const makeUserAgent = (platform) => {
     return userAgent.join(" ");
 };
 
+/**
+ * @param {string} fnName
+ */
+const throwNotImplemented = (fnName) => {
+    return function notImplemented() {
+        throw new HootError(`Unmocked navigator method: ${fnName}`);
+    };
+};
+
 /** @type {Set<MockPermissionStatus>} */
 const permissionStatuses = new Set();
 const userAgentBrowser = getUserAgentBrowser();
-let currentUserAgent = makeUserAgent("linux");
-let currentSendBeacon = () => {};
+const mockValues = getMockValues();
 
 //-----------------------------------------------------------------------------
 // Exports
@@ -158,50 +188,33 @@ export class MockClipboard {
     _value = null;
 
     async read() {
-        return this.readSync();
-    }
-
-    async readText() {
-        return this.readTextSync();
-    }
-
-    async write(value) {
-        return this.writeSync(value);
-    }
-
-    async writeText(value) {
-        return this.writeTextSync(value);
-    }
-
-    // Methods below are not part of the Clipboard API but are useful to make
-    // test events synchronous.
-
-    /**
-     * @returns {unknown}
-     */
-    readSync() {
         return this._value;
     }
 
-    /**
-     * @returns {string}
-     */
-    readTextSync() {
-        return String(this._value ?? "");
+    async readText() {
+        return String(getClipboardValue(this._value, "text/plain") ?? "");
     }
 
-    /**
-     * @param {unknown} value
-     */
-    writeSync(value) {
+    async write(value) {
         this._value = value;
     }
 
-    /**
-     * @param {string} value
-     */
-    writeTextSync(value) {
-        this._value = String(value ?? "");
+    async writeText(value) {
+        this._value = String(getClipboardValue(value, "text/plain") ?? "");
+    }
+}
+
+export class MockClipboardItem extends ClipboardItem {
+    constructor(items) {
+        super(items);
+
+        setSyncValue(this, items);
+    }
+
+    // Added synchronous methods to enhance speed in tests
+
+    async getType(type) {
+        return getSyncValue(this)[type];
     }
 }
 
@@ -209,17 +222,7 @@ export class MockPermissions {
     /**
      * @param {PermissionDescriptor} permissionDesc
      */
-    async query(permissionDesc) {
-        return this.querySync(permissionDesc);
-    }
-
-    // Methods below are not part of the Permissions API but are useful to make
-    // test events synchronous.
-
-    /**
-     * @param {PermissionDescriptor} permissionDesc
-     */
-    querySync({ name }) {
+    async query({ name }) {
         if (!(name in currentPermissions)) {
             throw new TypeError(
                 `The provided value '${name}' is not a valid enum value of type PermissionName`
@@ -263,17 +266,18 @@ export const mockPermissions = new MockPermissions();
 
 export const mockNavigator = createMock(navigator, {
     clipboard: { value: mockClipboard },
-    maxTouchPoints: { get: () => 0 },
+    maxTouchPoints: { get: () => (globalThis.ontouchstart === undefined ? 0 : 1) },
     permissions: { value: mockPermissions },
-    sendBeacon: { value: (...args) => currentSendBeacon(...args) },
+    sendBeacon: { get: () => mockValues.sendBeacon },
     serviceWorker: { get: () => undefined },
-    userAgent: { get: () => currentUserAgent },
+    userAgent: { get: () => mockValues.userAgent },
+    vibrate: { get: () => mockValues.vibrate },
 });
 
 export function cleanupNavigator() {
     permissionStatuses.clear();
     $assign(currentPermissions, getPermissions());
-    currentUserAgent = makeUserAgent("linux");
+    $assign(mockValues, getMockValues());
 }
 
 /**
@@ -297,15 +301,22 @@ export function mockPermission(name, value) {
 }
 
 /**
- * @param {typeof navigator.sendBeacon} callback
+ * @param {typeof Navigator["prototype"]["sendBeacon"]} callback
  */
 export function mockSendBeacon(callback) {
-    currentSendBeacon = callback;
+    mockValues.sendBeacon = callback;
 }
 
 /**
  * @param {Platform} platform
  */
 export function mockUserAgent(platform = "linux") {
-    currentUserAgent = makeUserAgent(platform);
+    mockValues.userAgent = makeUserAgent(platform);
+}
+
+/**
+ * @param {typeof Navigator["prototype"]["vibrate"]} callback
+ */
+export function mockVibrate(callback) {
+    mockValues.vibrate = callback;
 }

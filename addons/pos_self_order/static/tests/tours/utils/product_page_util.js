@@ -6,6 +6,13 @@ export function clickProduct(productName) {
     };
 }
 
+export function checkReferenceNotInProductName(productName, reference) {
+    return {
+        content: `Check product label has '${productName}' and not ${reference}`,
+        trigger: `.self_order_product_card span:contains('${productName}'):not(:contains("${reference}"))`,
+    };
+}
+
 export function clickCancel() {
     return [
         {
@@ -48,6 +55,35 @@ export function setupAttribute(attributes, addToCart = true) {
     }
 
     return steps;
+}
+
+export function verifyIsCheckedAttribute(attribute, values = []) {
+    return {
+        content: `Select value for attribute ${attribute}`,
+        trigger: `div.attribute-row h2:contains("${attribute}")`,
+        run: () => {
+            const attributesValues = Array.from(
+                document.querySelectorAll("div.attribute-row h2")
+            ).find((el) => el.textContent.includes(attribute));
+            if (!attributesValues) {
+                throw Error(`${attribute} not found.`);
+            }
+            const rowDiv = attributesValues.nextElementSibling;
+            if (!rowDiv || !rowDiv.matches("div.row")) {
+                throw Error("Sibling div.row not found or is incorrect.");
+            }
+            const colDiv = rowDiv.querySelector("div.col");
+            const labelElement = colDiv ? colDiv.querySelector("label") : null;
+            const inputElement = colDiv ? colDiv.querySelector("input") : null;
+            if (!labelElement || !inputElement) {
+                throw Error(`Missing ${attribute} values`);
+            }
+            const attributeValue = labelElement.querySelector("div > span").textContent.trim();
+            if (values.includes(attributeValue) && !inputElement.checked) {
+                throw Error(`Attribute ${attributeValue} not checked`);
+            }
+        },
+    };
 }
 
 export function setupCombo(products, addToCart = true) {

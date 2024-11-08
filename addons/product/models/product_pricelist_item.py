@@ -1,6 +1,6 @@
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
-from odoo import _, api, fields, models, tools
+from odoo import SUPERUSER_ID, _, api, fields, models, tools
 from odoo.exceptions import ValidationError
 from odoo.tools import format_datetime, formatLang
 
@@ -104,6 +104,8 @@ class PricelistItem(models.Model):
             ('formula', "Formula"),
             ('fixed', "Fixed Price"),
         ],
+        help="Use the discount rules and activate the discount settings"
+             " in order to show discount to customer.",
         index=True, default='fixed', required=True)
 
     fixed_price = fields.Float(string="Fixed Price", digits='Product Price')
@@ -274,6 +276,12 @@ class PricelistItem(models.Model):
                 'price_markup': 0.0,
             })
 
+    @api.onchange('base_pricelist_id')
+    def _onchange_base_pricelist_id(self):
+        for item in self:
+            if item.compute_price == 'percentage':
+                item.base = bool(item.base_pricelist_id) and 'pricelist' or 'list_price'
+
     @api.onchange('compute_price')
     def _onchange_compute_price(self):
         if self.compute_price != 'fixed':
@@ -314,8 +322,7 @@ class PricelistItem(models.Model):
     @api.onchange('price_markup')
     def _onchange_price_markup(self):
         for item in self:
-            if item.price_markup:
-                item.price_discount = -item.price_markup
+            item.price_discount = -item.price_markup
 
     @api.onchange('product_id')
     def _onchange_product_id(self):
@@ -362,17 +369,24 @@ class PricelistItem(models.Model):
     @api.model_create_multi
     def create(self, vals_list):
         for values in vals_list:
-            if values.get('applied_on', False):
-                # Ensure item consistency for later searches.
-                applied_on = values['applied_on']
-                if applied_on == '3_global':
-                    values.update(dict(product_id=None, product_tmpl_id=None, categ_id=None))
-                elif applied_on == '2_product_category':
-                    values.update(dict(product_id=None, product_tmpl_id=None))
-                elif applied_on == '1_product':
-                    values.update(dict(product_id=None, categ_id=None))
-                elif applied_on == '0_product_variant':
-                    values.update(dict(categ_id=None))
+            if not values.get('applied_on'):
+                values['applied_on'] = (
+                    '0_product_variant' if values.get('product_id') else
+                    '1_product' if values.get('product_tmpl_id') else
+                    '2_product_category' if values.get('categ_id') else
+                    '3_global'
+                )
+
+            # Ensure item consistency for later searches.
+            applied_on = values['applied_on']
+            if applied_on == '3_global':
+                values.update(dict(product_id=None, product_tmpl_id=None, categ_id=None))
+            elif applied_on == '2_product_category':
+                values.update(dict(product_id=None, product_tmpl_id=None))
+            elif applied_on == '1_product':
+                values.update(dict(product_id=None, categ_id=None))
+            elif applied_on == '0_product_variant':
+                values.update(dict(categ_id=None))
         return super().create(vals_list)
 
     def write(self, values):
@@ -536,7 +550,7 @@ class PricelistItem(models.Model):
         :rtype: float
         """
         pricelist_rule = self
-        pricelist_show_discount = pricelist_rule._is_percentage()
+        pricelist_show_discount = pricelist_rule._show_discount()
         if pricelist_rule and pricelist_show_discount:
             pricelist_item = pricelist_rule
             # Find the lowest pricelist rule whose pricelist is configured to show the discount
@@ -544,7 +558,7 @@ class PricelistItem(models.Model):
             while pricelist_item.base == 'pricelist':
                 rule_id = pricelist_item.base_pricelist_id._get_product_rule(*args, **kwargs)
                 rule_pricelist_item = self.env['product.pricelist.item'].browse(rule_id)
-                rule_show_discount = rule_pricelist_item._is_percentage()
+                rule_show_discount = rule_pricelist_item._show_discount()
                 if rule_pricelist_item and rule_show_discount:
                     pricelist_item = rule_pricelist_item
                 else:
@@ -554,13 +568,11 @@ class PricelistItem(models.Model):
 
         return pricelist_rule._compute_base_price(*args, **kwargs)
 
-    def _is_percentage(self):
+    @api.model
+    def _is_discount_feature_enabled(self):
+        superuser = self.env['res.users'].browse(SUPERUSER_ID)
+        return superuser.has_group('sale.group_discount_per_so_line')
+
+    def _show_discount(self):
         self and self.ensure_one()
-        return self.compute_price == 'percentage' or (
-            self.compute_price == 'formula'
-            and self.price_discount
-            and not self.price_surcharge
-            and not self.price_round
-            and not self.price_min_margin
-            and not self.price_max_margin
-        )
+        return self._is_discount_feature_enabled() and self.compute_price == 'percentage'

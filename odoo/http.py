@@ -129,7 +129,6 @@ endpoint
 """
 
 import base64
-import cgi
 import collections
 import collections.abc
 import contextlib
@@ -149,6 +148,7 @@ import traceback
 import warnings
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta
+from hashlib import sha512
 from io import BytesIO
 from os.path import join as opj
 from pathlib import Path
@@ -251,6 +251,7 @@ def get_default_session():
         'login': None,
         'uid': None,
         'session_token': None,
+        '_trace': [],
     }
 
 DEFAULT_MAX_CONTENT_LENGTH = 128 * 1024 * 1024  # 128MiB
@@ -499,6 +500,8 @@ class Stream:
     public = False
 
     def __init__(self, **kwargs):
+        # Remove class methods from the instances
+        self.from_path = self.from_attachment = self.from_binary_field = None
         self.__dict__.update(kwargs)
 
     @classmethod
@@ -518,6 +521,7 @@ class Stream:
         return cls(
             type='path',
             path=path,
+            mimetype=mimetypes.guess_type(path)[0],
             download_name=os.path.basename(path),
             etag=f'{int(stat.st_mtime)}-{stat.st_size}-{check}',
             last_modified=stat.st_mtime,
@@ -902,10 +906,13 @@ def _check_and_complete_route_definition(controller_cls, submethod, merged_routi
 # Session
 # =========================================================
 
+_base64_urlsafe_re = re.compile(r'^[A-Za-z0-9_-]{84}$')
+
+
 class FilesystemSessionStore(sessions.FilesystemSessionStore):
     """ Place where to load and save session objects. """
     def get_session_filename(self, sid):
-        # scatter sessions across 256 directories
+        # scatter sessions across 4096 (64^2) directories
         if not self.is_valid_key(sid):
             raise ValueError(f'Invalid session id {sid!r}')
         sha_dir = sid[:2]
@@ -949,6 +956,43 @@ class FilesystemSessionStore(sessions.FilesystemSessionStore):
             with contextlib.suppress(OSError):
                 if os.path.getmtime(path) < threshold:
                     os.unlink(path)
+
+    def generate_key(self, salt=None):
+        # The generated key is case sensitive (base64) and the length is 84 chars.
+        # In the worst-case scenario, i.e. in an insensitive filesystem (NTFS for example)
+        # taking into account the proportion of characters in the pool and a length
+        # of 42 (stored part in the database), the entropy for the base64 generated key
+        # is 217.875 bits which is better than the 160 bits entropy of a hexadecimal key
+        # with a length of 40 (method ``generate_key`` of ``SessionStore``).
+        # The risk of collision is negligible in practice.
+        # Formulas:
+        #   - L: length of generated word
+        #   - p_char: probability of obtaining the character in the pool
+        #   - n: size of the pool
+        #   - k: number of generated word
+        #   Entropy = - L * sum(p_char * log2(p_char))
+        #   Collision ~= (1 - exp((-k * (k - 1)) / (2 * (n**L))))
+        key = str(time.time()).encode() + os.urandom(64)
+        hash_key = sha512(key).digest()[:-1]  # prevent base64 padding
+        return base64.urlsafe_b64encode(hash_key).decode('utf-8')
+
+    def is_valid_key(self, key):
+        return _base64_urlsafe_re.match(key) is not None
+
+    def delete_from_identifiers(self, identifiers):
+        files_to_unlink = []
+        for identifier in identifiers:
+            # Avoid to remove a session if less than 42 chars.
+            # This prevent malicious user to delete sessions from a different
+            # database by specifying a ``res.device.log`` with only 2 characters.
+            if len(identifier) < 42:
+                continue
+            normalized_path = os.path.normpath(os.path.join(self.path, identifier[:2], identifier + '*'))
+            if normalized_path.startswith(self.path):
+                files_to_unlink.extend(glob.glob(normalized_path))
+        for fn in files_to_unlink:
+            with contextlib.suppress(OSError):
+                os.unlink(fn)
 
 
 class Session(collections.abc.MutableMapping):
@@ -1084,6 +1128,44 @@ class Session(collections.abc.MutableMapping):
 
     def touch(self):
         self.is_dirty = True
+
+    def update_trace(self, request):
+        """
+            :return: dict if a device log has to be inserted, ``None`` otherwise
+        """
+        if self._trace_disable:
+            # To avoid generating useless logs, e.g. for automated technical sessions,
+            # a session can be flagged with `_trace_disable`. This should never be done
+            # without a proper assessment of the consequences for auditability.
+            # Non-admin users have no direct or indirect way to set this flag, so it can't
+            # be abused by unprivileged users. Such sessions will of course still be
+            # subject to all other auditing mechanisms (server logs, web proxy logs,
+            # metadata tracking on modified records, etc.)
+            return
+
+        user_agent = request.httprequest.user_agent
+        platform = user_agent.platform
+        browser = user_agent.browser
+        ip_address = request.httprequest.remote_addr
+        now = int(datetime.now().timestamp())
+        for trace in self._trace:
+            if trace['platform'] == platform and trace['browser'] == browser and trace['ip_address'] == ip_address:
+                # If the device logs are not up to date (i.e. not updated for one hour or more)
+                if bool(now - trace['last_activity'] >= 3600):
+                    trace['last_activity'] = now
+                    self.is_dirty = True
+                    return trace
+                return
+        new_trace = {
+            'platform': platform,
+            'browser': browser,
+            'ip_address': ip_address,
+            'first_activity': now,
+            'last_activity': now
+        }
+        self._trace.append(new_trace)
+        self.is_dirty = True
+        return new_trace
 
 
 # =========================================================
@@ -1397,6 +1479,7 @@ class Request:
 
     def _post_init(self):
         self.session, self.db = self._get_session_and_dbname()
+        self._post_init = None
 
     def _get_session_and_dbname(self):
         sid = self.httprequest.cookies.get('session_id')
@@ -1504,6 +1587,13 @@ class Request:
             return lang
         except (ValueError, KeyError):
             return None
+
+    @lazy_property
+    def cookies(self):
+        cookies = werkzeug.datastructures.MultiDict(self.httprequest.cookies)
+        if self.registry:
+            self.registry['ir.http']._sanitize_cookies(cookies)
+        return werkzeug.datastructures.ImmutableMultiDict(cookies)
 
     # =====================================================
     # Helpers
@@ -1745,7 +1835,7 @@ class Request:
         elif sess.is_dirty:
             root.session_store.save(sess)
 
-        cookie_sid = self.httprequest.cookies.get('session_id')
+        cookie_sid = self.cookies.get('session_id')
         if sess.is_dirty or cookie_sid != sess.sid:
             self.future_response.set_cookie('session_id', sess.sid, max_age=get_session_max_inactivity(self.env), httponly=True)
 
@@ -2250,8 +2340,7 @@ class Application:
         if 'Content-Security-Policy' in headers:
             return
 
-        mime, _params = cgi.parse_header(headers.get('Content-Type', ''))
-        if not mime.startswith('image/'):
+        if not headers.get('Content-Type', '').startswith('image/'):
             return
 
         headers['Content-Security-Policy'] = "default-src 'none'"
@@ -2304,7 +2393,10 @@ class Application:
                         _logger.warning("Database or registry unusable, trying without", exc_info=e.__cause__)
                         request.db = None
                         request.session.logout()
-                        if httprequest.path in ('/web', '/web/login', '/test_http/ensure_db'):
+                        if (httprequest.path.startswith('/odoo/')
+                            or httprequest.path in (
+                                '/odoo', '/web', '/web/login', '/test_http/ensure_db',
+                            )):
                             # ensure_db() protected routes, remove ?db= from the query string
                             args_nodb = request.httprequest.args.copy()
                             args_nodb.pop('db', None)

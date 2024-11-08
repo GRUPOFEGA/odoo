@@ -16,6 +16,7 @@ export class DiscussCoreWeb {
         this.ui = services.ui;
         this.discussCoreCommonService = services["discuss.core.common"];
         this.store = services["mail.store"];
+        this.multiTab = services.multi_tab;
         try {
             this.sidebarCategoriesBroadcast = new browser.BroadcastChannel(
                 "discuss_core_web.sidebar_categories"
@@ -32,20 +33,17 @@ export class DiscussCoreWeb {
                 category.open = open;
             }
         });
-        this.env.bus.addEventListener(
-            "discuss.channel/new_message",
-            ({ detail: { channel, message } }) => {
-                if (this.ui.isSmall || message.isSelfAuthored) {
-                    return;
-                }
-                if (channel.isCorrespondentOdooBot && this.store.odoobotOnboarding) {
-                    // this cancels odoobot onboarding auto-opening of chat window
-                    this.store.odoobotOnboarding = false;
-                    return;
-                }
-                channel.notifyMessageToUser(message);
+        this.busService.subscribe("discuss.channel/joined", async (payload) => {
+            const { channel, invited_by_user_id: invitedByUserId } = payload;
+            const thread = this.store.Thread.insert(channel);
+            await thread.fetchChannelInfo();
+            if (invitedByUserId && invitedByUserId !== this.store.self.userId) {
+                this.notificationService.add(
+                    _t("You have been invited to #%s", thread.displayName),
+                    { type: "info" }
+                );
             }
-        );
+        });
         this.busService.subscribe("res.users/connection", async ({ partnerId, username }) => {
             // If the current user invited a new user, and the new user is
             // connecting for the first time while the current user is present
@@ -55,6 +53,9 @@ export class DiscussCoreWeb {
                 { user: username }
             );
             this.notificationService.add(notification, { type: "info" });
+            if (!this.multiTab.isOnMainTab()) {
+                return;
+            }
             const chat = await this.store.getChat({ partnerId });
             if (chat && !this.ui.isSmall) {
                 this.store.chatHub.opened.add({ thread: chat });
@@ -91,7 +92,7 @@ export class DiscussCoreWeb {
 }
 
 export const discussCoreWeb = {
-    dependencies: ["bus_service", "discuss.core.common", "mail.store", "notification", "ui"],
+    dependencies: ["bus_service", "discuss.core.common", "mail.store", "notification", "ui", "multi_tab"],
     /**
      * @param {import("@web/env").OdooEnv} env
      * @param {Partial<import("services").Services>} services

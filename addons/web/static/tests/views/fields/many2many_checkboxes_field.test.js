@@ -1,5 +1,5 @@
 import { expect, test } from "@odoo/hoot";
-import { queryAllTexts, queryLast } from "@odoo/hoot-dom";
+import { queryAllTexts } from "@odoo/hoot-dom";
 import { runAllTimers } from "@odoo/hoot-mock";
 import {
     clickSave,
@@ -89,16 +89,12 @@ test("Many2ManyCheckBoxesField (readonly)", async () => {
             </form>`,
     });
 
-    expect(
-        "div.o_field_widget div.form-check",
-        2,
-        "should have fetched and displayed the 2 values of the many2many"
-    ).toHaveCount(2);
-    expect(
-        "div.o_field_widget div.form-check input:disabled",
-        2,
-        "the checkboxes should be disabled"
-    ).toHaveCount(2);
+    expect("div.o_field_widget div.form-check").toHaveCount(2, {
+        message: "should have fetched and displayed the 2 values of the many2many",
+    });
+    expect("div.o_field_widget div.form-check input:disabled").toHaveCount(2, {
+        message: "the checkboxes should be disabled",
+    });
 
     await contains("div.o_field_widget div.form-check > label:eq(1)").click();
 
@@ -219,11 +215,11 @@ test("Many2ManyCheckBoxesField with 40+ values", async () => {
     expect(".o_field_widget[name='timmy'] input[type='checkbox']:checked").toHaveCount(90);
 
     // toggle the last value
-    await contains(queryLast(".o_field_widget[name='timmy'] input[type='checkbox']")).click();
+    await contains(".o_field_widget[name='timmy'] input[type='checkbox']:last").click();
     await runAllTimers();
 
     await clickSave();
-    expect(queryLast(".o_field_widget[name='timmy'] input[type='checkbox']")).not.toBeChecked();
+    expect(".o_field_widget[name='timmy'] input[type='checkbox']:last").not.toBeChecked();
 });
 
 test("Many2ManyCheckBoxesField with 100+ values", async () => {

@@ -1,6 +1,7 @@
 /** @odoo-module */
 
-import { reactive, useExternalListener } from "@odoo/owl";
+import { queryAll } from "@odoo/hoot-dom";
+import { reactive, useEffect, useExternalListener } from "@odoo/owl";
 import { isNode } from "@web/../lib/hoot-dom/helpers/dom";
 import { isIterable, toSelector } from "@web/../lib/hoot-dom/hoot_dom_utils";
 import { DiffMatchPatch } from "./lib/diff_match_patch";
@@ -12,10 +13,12 @@ import { getRunner } from "./main_runner";
  * @typedef {"any"
  *  | "bigint"
  *  | "boolean"
+ *  | "date"
  *  | "error"
  *  | "function"
  *  | "integer"
  *  | "node"
+ *  | "null"
  *  | "number"
  *  | "object"
  *  | "regex"
@@ -60,8 +63,10 @@ const {
     Date,
     Error,
     ErrorEvent,
+    JSON: { parse: $parse, stringify: $stringify },
+    localStorage,
     Map,
-    Math: { floor },
+    Math: { floor: $floor, max: $max },
     Number: { isInteger: $isInteger, isNaN: $isNaN, parseFloat: $parseFloat },
     navigator: { clipboard: $clipboard },
     Object: {
@@ -70,6 +75,7 @@ const {
         defineProperty: $defineProperty,
         entries: $entries,
         fromEntries: $fromEntries,
+        getOwnPropertyDescriptors: $getOwnPropertyDescriptors,
         getPrototypeOf: $getPrototypeOf,
         keys: $keys,
     },
@@ -83,14 +89,40 @@ const {
     TypeError,
     window,
 } = globalThis;
+/** @type {Storage["getItem"]} */
+const $getItem = localStorage.getItem.bind(localStorage);
 /** @type {Clipboard["readText"]} */
 const $readText = $clipboard?.readText.bind($clipboard);
+/** @type {Storage["setItem"]} */
+const $setItem = localStorage.setItem.bind(localStorage);
+/** @type {Storage["removeItem"]} */
+const $removeItem = localStorage.removeItem.bind(localStorage);
 /** @type {Clipboard["writeText"]} */
 const $writeText = $clipboard?.writeText.bind($clipboard);
 
 //-----------------------------------------------------------------------------
 // Internal
 //-----------------------------------------------------------------------------
+
+/**
+ * @param {(...args: any[]) => any} fn
+ */
+const getFunctionString = (fn) => {
+    if (R_CLASS.test(fn.name)) {
+        return `${fn.name ? `class ${fn.name}` : "anonymous class"} { ${ELLIPSIS} }`;
+    }
+    const strFn = fn.toString();
+    const prefix = R_ASYNC_FUNCTION.test(strFn) ? "async " : "";
+
+    if (R_NAMED_FUNCTION.test(strFn)) {
+        return `${
+            fn.name ? `${prefix}function ${fn.name}` : `anonymous ${prefix}function`
+        }() { ${ELLIPSIS} }`;
+    }
+
+    const args = fn.length ? "...args" : "";
+    return `${prefix}(${args}) => { ${ELLIPSIS} }`;
+};
 
 /**
  * @template {(...args: any[]) => T} T
@@ -110,29 +142,119 @@ const memoize = (instanceGetter) => {
 };
 
 /**
- * @param {unknown} number
+ * @param {string} value
+ * @param {number} [length=MAX_HUMAN_READABLE_SIZE]
  */
-const ordinal = (number) => {
-    const strNumber = String(number);
-    if (strNumber.at(-2) === "1") {
-        return `${strNumber}th`;
-    }
-    switch (strNumber.at(-1)) {
-        case "1": {
-            return `${strNumber}st`;
-        }
-        case "2": {
-            return `${strNumber}nd`;
-        }
-        case "3": {
-            return `${strNumber}rd`;
-        }
-        default: {
-            return `${strNumber}th`;
-        }
-    }
+const truncate = (value, length = MAX_HUMAN_READABLE_SIZE) => {
+    const strValue = String(value);
+    return strValue.length <= length ? strValue : strValue.slice(0, length) + ELLIPSIS;
 };
 
+/**
+ * @param {unknown} value
+ * @param {number} length
+ * @returns {[string, number]}
+ */
+const _formatHumanReadable = (value, length) => {
+    let humanReadableValue = "";
+    if (typeof value === "string") {
+        humanReadableValue = stringify(truncate(value));
+    } else if (typeof value === "number") {
+        if (value << 0 === value) {
+            humanReadableValue = truncate(value);
+        } else {
+            let fixed = value.toFixed(3);
+            while (fixed.endsWith("0")) {
+                fixed = fixed.slice(0, -1);
+            }
+            humanReadableValue = truncate(fixed);
+        }
+    } else if (typeof value === "function") {
+        humanReadableValue = getFunctionString(value);
+    } else if (value && typeof value === "object") {
+        if (value instanceof RegExp) {
+            humanReadableValue = truncate(value);
+        } else if (value instanceof Date) {
+            humanReadableValue = value.toISOString();
+        } else if (isNode(value)) {
+            const name = value.nodeName.toLowerCase();
+            humanReadableValue = value.nodeType === Node.ELEMENT_NODE ? `<${name}>` : name;
+        } else if (isIterable(value)) {
+            const values = [...value];
+            if (values.length === 1 && isNode(values[0])) {
+                // Special case for single-element nodes arrays
+                const hValue = _formatHumanReadable(values[0], length);
+                humanReadableValue = hValue;
+                length += hValue.length;
+            } else {
+                const constructorPrefix =
+                    value.constructor.name === "Array" ? "" : `${value.constructor.name} `;
+                const content = [];
+                if (values.length) {
+                    const bitSize = $max(
+                        MIN_HUMAN_READABLE_SIZE,
+                        $floor(MAX_HUMAN_READABLE_SIZE / values.length)
+                    );
+                    for (const val of values) {
+                        const hVal = truncate(_formatHumanReadable(val, length), bitSize);
+                        content.push(hVal);
+                        length += hVal.length;
+                        if (length > MAX_HUMAN_READABLE_SIZE) {
+                            content.push(ELLIPSIS);
+                            break;
+                        }
+                    }
+                }
+                humanReadableValue = `${constructorPrefix}[${truncate(content.join(", "))}]`;
+            }
+        } else {
+            const keys = $keys(value);
+            const constructorPrefix =
+                value.constructor.name === "Object" ? "" : `${value.constructor.name} `;
+            const content = [];
+            if (value.constructor.name !== "Window" && keys.length) {
+                const bitSize = $max(
+                    MIN_HUMAN_READABLE_SIZE,
+                    $floor(MAX_HUMAN_READABLE_SIZE / keys.length)
+                );
+                const descriptors = $getOwnPropertyDescriptors(value);
+                for (const key of keys) {
+                    if (!("value" in descriptors[key])) {
+                        continue;
+                    }
+                    const hVal = truncate(
+                        _formatHumanReadable(descriptors[key].value, length),
+                        bitSize
+                    );
+                    content.push(`${key}: ${hVal}`);
+                    length += hVal.length;
+                    if (length > MAX_HUMAN_READABLE_SIZE) {
+                        content.push(ELLIPSIS);
+                        break;
+                    }
+                }
+            }
+            humanReadableValue = `${constructorPrefix}{ ${truncate(content.join(", "))} }`;
+        }
+    } else {
+        humanReadableValue = String(value);
+    }
+
+    return humanReadableValue;
+};
+
+const BACK_TICK = "`";
+const DOUBLE_QUOTES = '"';
+const SINGLE_QUOTE = "'";
+
+const ELLIPSIS = "…";
+const MAX_HUMAN_READABLE_SIZE = 80;
+const MIN_HUMAN_READABLE_SIZE = 8;
+
+const R_ASYNC_FUNCTION = /^\s*async/;
+const R_CLASS = /^[A-Z][a-z]/;
+const R_NAMED_FUNCTION = /^\s*(async\s+)?function/;
+const R_INVISIBLE_CHARACTERS = /[\u00a0\u200b-\u200d\ufeff]/g;
 const R_OBJECT = /^\[object \w+\]$/;
 
 const dmp = new DiffMatchPatch();
@@ -168,7 +290,7 @@ export function consumeCallbackList(callbacks, method, ...args) {
 export async function copy(text) {
     try {
         await $writeText(text);
-        $debug(`Copied to clipboard: "${text}"`);
+        $debug(`Copied to clipboard: ${stringify(text)}`);
     } catch (error) {
         console.warn("Could not copy to clipboard:", error);
     }
@@ -255,7 +377,7 @@ export function createReporting(parentReporting) {
  * @returns {T}
  */
 export function createMock(target, descriptors) {
-    const mock = $create(target);
+    const mock = $assign($create($getPrototypeOf(target)), target);
     let owner = target;
     let keys;
 
@@ -302,6 +424,9 @@ export function deepCopy(value) {
         }
     }
     if (typeof value === "object" && !Markup.isMarkup(value)) {
+        if (value instanceof String || value instanceof Number || value instanceof Boolean) {
+            return value;
+        }
         if (isNode(value)) {
             // Nodes
             return value.cloneNode(true);
@@ -433,11 +558,18 @@ export function deepEqual(a, b, cache = new Set()) {
 }
 
 /**
- * @param {[unknown, ArgumentType | ArgumentType[]][]} argumentsDefs
+ * @param {any[]} args
+ * @param {...(ArgumentType | ArgumentType[])} argumentsDefs
  */
-export function ensureArguments(argumentsDefs) {
+export function ensureArguments(args, ...argumentsDefs) {
+    if (args.length > argumentsDefs.length) {
+        throw new HootError(
+            `expected a maximum of ${argumentsDefs.length} arguments and got ${args.length}`
+        );
+    }
     for (let i = 0; i < argumentsDefs.length; i++) {
-        const [value, acceptedType] = argumentsDefs[i];
+        const value = args[i];
+        const acceptedType = argumentsDefs[i];
         const types = isIterable(acceptedType) ? [...acceptedType] : [acceptedType];
         if (!types.some((type) => isOfType(value, type))) {
             const strTypes = types.map(formatHumanReadable);
@@ -469,71 +601,20 @@ export function ensureError(value) {
         return value;
     }
     if (value instanceof ErrorEvent) {
-        return ensureError(value.error);
+        return ensureError(value.error || value.message);
     }
     if (value instanceof PromiseRejectionEvent) {
-        return ensureError(value.reason);
+        return ensureError(value.reason || value.message);
     }
     return new Error(String(value || "unknown error"));
 }
 
 /**
  * @param {unknown} value
- * @param {{ depth?: number }} [options]
  * @returns {string}
  */
-export function formatHumanReadable(value, options) {
-    if (typeof value === "string") {
-        if (value.length > 255) {
-            value = value.slice(0, 255) + "...";
-        }
-        return `"${value}"`;
-    } else if (typeof value === "number") {
-        return value << 0 === value ? String(value) : value.toFixed(3);
-    } else if (typeof value === "function") {
-        const name = value.name || "anonymous";
-        const prefix = /^[A-Z][a-z]/.test(name) ? `class ${name}` : `Function ${name}()`;
-        return `${prefix} { ... }`;
-    } else if (value && typeof value === "object") {
-        if (value instanceof RegExp) {
-            return value.toString();
-        } else if (value instanceof Date) {
-            return value.toISOString();
-        } else if (isNode(value)) {
-            return `<${value.nodeName.toLowerCase()}>`;
-        } else if (isIterable(value)) {
-            const values = [...value];
-            if (values.length === 1 && isNode(values[0])) {
-                // Special case for single-element nodes arrays
-                return `<${values[0].nodeName.toLowerCase()}>`;
-            }
-            const depth = options?.depth || 0;
-            const constructorPrefix =
-                value.constructor.name === "Array" ? "" : `${value.constructor.name} `;
-            let content = "";
-            if (values.length > 1 || depth > 0) {
-                content = "...";
-            } else if (values.length) {
-                content = formatHumanReadable(values[0], { depth: depth + 1 });
-            }
-            return `${constructorPrefix}[${content}]`;
-        } else {
-            const depth = options?.depth || 0;
-            const keys = $keys(value);
-            const constructorPrefix =
-                value.constructor.name === "Object" ? "" : `${value.constructor.name} `;
-            let content = "";
-            if (keys.length > 1 || depth > 0) {
-                content = "...";
-            } else if (keys.length) {
-                content = `${keys[0]}: ${formatHumanReadable(value[keys[0]], {
-                    depth: depth + 1,
-                })}`;
-            }
-            return `${constructorPrefix}{ ${content} }`;
-        }
-    }
-    return String(value);
+export function formatHumanReadable(value) {
+    return _formatHumanReadable(value, 0);
 }
 
 /**
@@ -548,16 +629,14 @@ export function formatTechnical(
 ) {
     const baseIndent = isObjectValue ? "" : " ".repeat(depth * 2);
     if (typeof value === "string") {
-        return `${baseIndent}"${value}"`;
+        return `${baseIndent}${stringify(value)}`;
     } else if (typeof value === "number") {
         return `${baseIndent}${value << 0 === value ? String(value) : value.toFixed(3)}`;
     } else if (typeof value === "function") {
-        const name = value.name || "anonymous";
-        const prefix = /^[A-Z][a-z]/.test(name) ? `class ${name}` : `Function ${name}()`;
-        return `${baseIndent}${prefix} { ... }`;
+        return `${baseIndent}${getFunctionString(value)}`;
     } else if (value && typeof value === "object") {
         if (cache.has(value)) {
-            return `${baseIndent}${$isArray(value) ? "[...]" : "{ ... }"}`;
+            return `${baseIndent}${$isArray(value) ? `[${ELLIPSIS}]` : `{ ${ELLIPSIS} }`}`;
         } else {
             cache.add(value);
             const startIndent = " ".repeat((depth + 1) * 2);
@@ -571,20 +650,21 @@ export function formatTechnical(
             } else if (isIterable(value)) {
                 const proto =
                     value.constructor.name === "Array" ? "" : `${value.constructor.name} `;
-                return `${baseIndent}${proto}[\n${[...value]
-                    .map(
-                        (val) =>
-                            `${startIndent}${formatTechnical(val, {
-                                cache,
-                                depth: depth + 1,
-                                isObjectValue: true,
-                            })},\n`
-                    )
-                    .join("")}${endIndent}]`;
+                const content = [...value].map(
+                    (val) =>
+                        `${startIndent}${formatTechnical(val, {
+                            cache,
+                            depth: depth + 1,
+                            isObjectValue: true,
+                        })},\n`
+                );
+                return `${baseIndent}${proto}[${
+                    content.length ? `\n${content.join("")}${endIndent}` : ""
+                }]`;
             } else {
                 const proto =
                     value.constructor.name === "Object" ? "" : `${value.constructor.name} `;
-                return `${baseIndent}${proto}{\n${$entries(value)
+                const content = $entries(value)
                     .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
                     .map(
                         ([k, v]) =>
@@ -593,8 +673,10 @@ export function formatTechnical(
                                 depth: depth + 1,
                                 isObjectValue: true,
                             })},\n`
-                    )
-                    .join("")}${endIndent}}`;
+                    );
+                return `${baseIndent}${proto}{${
+                    content.length ? `\n${content.join("")}${endIndent}` : ""
+                }}`;
             }
         }
     }
@@ -618,13 +700,13 @@ export function formatTime(value, unit) {
         } else if (value < 1_000) {
             value = $parseFloat(value.toFixed(1));
         } else {
-            const str = String(floor(value));
+            const str = String($floor(value));
             return `${str.slice(0, -3) + "," + str.slice(-3)}${unit}`;
         }
         return value + unit;
     }
 
-    value = floor(value / 1_000);
+    value = $floor(value / 1_000);
 
     const seconds = value % 60;
     value -= seconds;
@@ -692,6 +774,49 @@ export function getFuzzyScore(pattern, string) {
     return patternIndex === pattern.length ? totalScore : 0;
 }
 
+/**
+ * @param {unknown} value
+ * @returns {ArgumentType}
+ */
+export function getTypeOf(value) {
+    const type = typeof value;
+    switch (type) {
+        case "number": {
+            return $isInteger(value) ? "integer" : "number";
+        }
+        case "object": {
+            if (value === null) {
+                return "null";
+            }
+            if (value instanceof Date) {
+                return "date";
+            }
+            if (value instanceof Error) {
+                return "error";
+            }
+            if (isNode(value)) {
+                return "node";
+            }
+            if (value instanceof RegExp) {
+                return "regex";
+            }
+            if (isIterable(value)) {
+                const types = [...value].map(getTypeOf);
+                const arrayType = new Set(types).size === 1 ? types[0] : "any";
+                if (arrayType.endsWith("[]")) {
+                    return "object[]";
+                } else {
+                    return `${arrayType}[]`;
+                }
+            }
+            /** fallsthrough */
+        }
+        default: {
+            return type;
+        }
+    }
+}
+
 export function hasClipboard() {
     return Boolean($clipboard);
 }
@@ -718,11 +843,14 @@ export function isOfType(value, type) {
         return isIterable(value) && [...value].every((v) => isOfType(v, itemType));
     }
     switch (type) {
+        case "null":
         case null:
         case undefined:
             return value === null || value === undefined;
         case "any":
             return true;
+        case "date":
+            return value instanceof Date;
         case "error":
             return value instanceof Error;
         case "integer":
@@ -737,48 +865,43 @@ export function isOfType(value, type) {
 }
 
 /**
- * @param {unknown} value
- */
-export function toExplicitString(value) {
-    const strValue = String(value);
-    switch (strValue) {
-        case "\n":
-            return "\\n";
-        case "\t":
-            return "\\t";
-    }
-    // replace zero-width spaces with their explicit representation
-    return strValue.replace(
-        /[\u200B-\u200D\uFEFF]/g,
-        (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`
-    );
-}
-
-/**
  * Returns a list of items that match the given pattern, ordered by their 'score'
  * (descending). A higher score means that the match is closer (e.g. consecutive
  * letters).
  *
- * @template T
+ * @template {{ key: string }} T
  * @param {string | RegExp} pattern normalized string or RegExp
  * @param {Iterable<T>} items
- * @param {(item: T) => string} mapFn
+ * @param {keyof T} [property]
  * @returns {T[]}
  */
-export function lookup(pattern, items, mapFn = normalize) {
+export function lookup(pattern, items, property = "key") {
+    /** @type {T[]} */
+    const result = [];
     if (pattern instanceof RegExp) {
-        return [...items].filter((item) => pattern.test(mapFn(item)));
-    } else {
-        // Fuzzy lookup
-        const result = [];
+        // Regex lookup
         for (const item of items) {
-            const score = getFuzzyScore(pattern, mapFn(item));
-            if (score > 0) {
-                result.push([item, score]);
+            if (pattern.test(item[property])) {
+                result.push(item);
             }
         }
-        return result.sort((a, b) => b[1] - a[1]).map(([item]) => item);
+    } else {
+        // Fuzzy lookup
+        const scores = new Map();
+        for (const item of items) {
+            if (scores.has(item)) {
+                result.push(item);
+                continue;
+            }
+            const score = getFuzzyScore(pattern, item[property]);
+            if (score > 0) {
+                scores.set(item, score);
+                result.push(item);
+            }
+        }
+        result.sort((a, b) => scores.get(b) - scores.get(a));
     }
+    return result;
 }
 
 /**
@@ -868,6 +991,30 @@ export function normalize(string) {
         .replace(/[\u0300-\u036f]/g, "");
 }
 
+/**
+ * @param {unknown} number
+ */
+export function ordinal(number) {
+    const strNumber = String(number);
+    if (strNumber.at(-2) === "1") {
+        return `${strNumber}th`;
+    }
+    switch (strNumber.at(-1)) {
+        case "1": {
+            return `${strNumber}st`;
+        }
+        case "2": {
+            return `${strNumber}nd`;
+        }
+        case "3": {
+            return `${strNumber}rd`;
+        }
+        default: {
+            return `${strNumber}th`;
+        }
+    }
+}
+
 export async function paste() {
     try {
         await $readText();
@@ -877,12 +1024,50 @@ export async function paste() {
 }
 
 /**
+ * @param {string} key
+ */
+export function storageGet(key) {
+    const value = $getItem(key);
+    if (value) {
+        try {
+            const parsed = $parse(value);
+            return parsed;
+        } catch (err) {
+            console.warn(`Couldn't parse value for storage key "${key}":`, err);
+            $removeItem(key);
+        }
+    }
+    return null;
+}
+
+/**
+ * @param {string} key
+ * @param {any} value
+ */
+export function storageSet(key, value) {
+    return $setItem(key, $stringify(value));
+}
+
+/**
  * @param {unknown} a
  * @param {unknown} b
  * @returns {boolean}
  */
 export function strictEqual(a, b) {
     return $isNaN(a) ? $isNaN(b) : a === b;
+}
+
+/**
+ * @param {unknown} value
+ */
+export function stringify(value) {
+    const strValue = String(value);
+    const quotes = strValue.includes(DOUBLE_QUOTES)
+        ? strValue.includes(SINGLE_QUOTE)
+            ? BACK_TICK
+            : SINGLE_QUOTE
+        : DOUBLE_QUOTES;
+    return quotes + strValue + quotes;
 }
 
 /**
@@ -901,6 +1086,51 @@ export function stringToNumber(string) {
  */
 export function title(string) {
     return string[0].toUpperCase() + string.slice(1);
+}
+
+/**
+ * Replaces invisible characters in a given value with their unicode value.
+ *
+ * @param {unknown} value
+ */
+export function toExplicitString(value) {
+    const strValue = String(value);
+    switch (strValue) {
+        case "\n": {
+            return "\\n";
+        }
+        case "\t": {
+            return "\\t";
+        }
+    }
+    return strValue.replace(
+        R_INVISIBLE_CHARACTERS,
+        (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`
+    );
+}
+
+/**
+ * @param {{ el?: HTMLElement }} ref
+ */
+export function useAutofocus(ref) {
+    let displayed = new Set();
+    useEffect(() => {
+        if (!ref.el) {
+            return;
+        }
+        const nextDisplayed = new Set();
+        for (const element of ref.el.querySelectorAll("[autofocus]")) {
+            if (!displayed.has(element)) {
+                element.focus();
+                if (["INPUT", "TEXTAREA"].includes(element.tagName)) {
+                    element.selectionStart = 0;
+                    element.selectionEnd = element.value;
+                }
+            }
+            nextDisplayed.add(element);
+        }
+        displayed = nextDisplayed;
+    });
 }
 
 /** @type {EventTarget["addEventListener"]} */
@@ -1023,6 +1253,54 @@ export class Callbacks {
     }
 }
 
+/**
+ * @template T
+ * @extends {Map<Element, T>}
+ */
+export class ElementMap extends Map {
+    /** @type {string | null} */
+    selector = null;
+
+    /**
+     * @param {Target} target
+     * @param {(element: Element) => T} [mapFn]
+     */
+    constructor(target, mapFn) {
+        const mapValues = [];
+        for (const element of queryAll(target)) {
+            mapValues.push([element, mapFn ? mapFn(element) : element]);
+        }
+
+        super(mapValues);
+
+        this.selector = target;
+    }
+
+    get first() {
+        return this.values().next().value;
+    }
+
+    getElements() {
+        return [...this.keys()];
+    }
+
+    /**
+     * @template [N=T]
+     * @param {(value: T) => N[]} [flatMapFn]
+     * @returns {N[]}
+     */
+    getValues(flatMapFn) {
+        if (!flatMapFn) {
+            return [...this.values()];
+        }
+        const result = [];
+        for (const value of this.values()) {
+            result.push(...flatMapFn(value));
+        }
+        return result;
+    }
+}
+
 export class HootError extends Error {
     name = "HootError";
 }
@@ -1044,34 +1322,47 @@ export class Markup {
     }
 
     /**
-     * @param {unknown} a
-     * @param {unknown} b
+     * @param {unknown} expected
+     * @param {unknown} actual
      */
-    static diff(a, b) {
-        return new this({
-            technical: true,
-            content: dmp.diff_main(formatTechnical(a), formatTechnical(b)).map((diff) => {
-                const classList = ["no-underline"];
-                let tagName = "t";
-                if (diff[0] === DIFF_INSERT) {
-                    classList.push("text-pass", "bg-pass-900");
-                    tagName = "ins";
-                } else if (diff[0] === DIFF_DELETE) {
-                    classList.push("text-fail", "bg-fail-900");
-                    tagName = "del";
-                }
-                return new this({
-                    className: classList.join(" "),
-                    content: toExplicitString(diff[1]),
-                    tagName,
-                });
+    static diff(expected, actual) {
+        const eType = typeof expected;
+        if (eType !== typeof actual || !(eType === "object" || eType === "string")) {
+            // Cannot diff
+            return null;
+        }
+        return [
+            new this({ content: "Diff:" }),
+            new this({
+                technical: true,
+                content: dmp
+                    .diff_main(formatTechnical(expected), formatTechnical(actual))
+                    .map((diff) => {
+                        const classList = ["no-underline"];
+                        let tagName = "t";
+                        if (diff[0] === DIFF_INSERT) {
+                            classList.push("text-pass", "bg-pass-900");
+                            tagName = "ins";
+                        } else if (diff[0] === DIFF_DELETE) {
+                            classList.push("text-fail", "bg-fail-900");
+                            tagName = "del";
+                        }
+                        return new this({
+                            className: classList.join(" "),
+                            content: toExplicitString(diff[1]),
+                            tagName,
+                        });
+                    }),
             }),
-        });
+        ];
     }
 
-    /** @param {string} content */
-    static green(content) {
-        return new this({ className: "text-pass", content });
+    /**
+     * @param {string} content
+     * @param {unknown} value
+     */
+    static green(content, value) {
+        return [new this({ className: "text-pass", content }), deepCopy(value)];
     }
 
     /**
@@ -1081,13 +1372,17 @@ export class Markup {
         return object instanceof Markup;
     }
 
-    /** @param {string} content */
-    static red(content) {
-        return new this({ className: "text-fail", content });
+    /**
+     * @param {string} content
+     * @param {unknown} value
+     */
+    static red(content, value) {
+        return [new this({ className: "text-fail", content }), deepCopy(value)];
     }
 
     /**
      * @param {string} content
+     * @param {unknown} value
      * @param {{ technical?: boolean }} [options]
      */
     static text(content, options) {
@@ -1095,8 +1390,43 @@ export class Markup {
     }
 }
 
+export class FormattedString extends String {
+    static RAW = "raw";
+
+    /** @type {string} */
+    type;
+
+    /**
+     * @param {unknown} value
+     * @param {string} [type]
+     */
+    constructor(value, type) {
+        if (!type) {
+            if (value instanceof FormattedString) {
+                type = value.type;
+            } else {
+                type = getTypeOf(value);
+            }
+        }
+
+        if (type !== FormattedString.RAW) {
+            value = formatHumanReadable(value);
+        }
+
+        super(value);
+
+        this.type = type;
+    }
+}
+
 export const INCLUDE_LEVEL = {
     url: 1,
     tag: 2,
     preset: 3,
+};
+
+export const STORAGE = {
+    failed: "hoot-failed-tests",
+    scheme: "hoot-color-scheme",
+    searches: "hoot-latest-searches",
 };

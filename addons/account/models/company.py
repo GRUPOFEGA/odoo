@@ -85,7 +85,7 @@ class ResCompany(models.Model):
         string="Gain Exchange Rate Account",
         check_company=True,
         domain="[('deprecated', '=', False),\
-                ('account_type', 'in', ('income', 'income_other'))]")
+                ('internal_group', '=', 'income')]")
     expense_currency_exchange_account_id = fields.Many2one(
         comodel_name='account.account',
         string="Loss Exchange Rate Account",
@@ -647,12 +647,15 @@ class ResCompany(models.Model):
         return account
 
     def install_l10n_modules(self):
+        if self.env.context.get('chart_template_load'):
+            # No automatic install during the loading of a chart_template
+            return False
         if res := super().install_l10n_modules():
             self.env.flush_all()
             self.env.reset()     # clear the set of environments
             env = self.env()     # get an environment that refers to the new registry
             for company in self.filtered(lambda c: c.country_id and not c.chart_template):
-                template_code = self.env['account.chart.template']._guess_chart_template(company.country_id)
+                template_code = company.parent_id.chart_template or self.env['account.chart.template']._guess_chart_template(company.country_id)
                 if template_code != 'generic_coa':
                     @self.env.cr.precommit.add
                     def try_loading(template_code=template_code, company=company):
@@ -782,6 +785,8 @@ class ResCompany(models.Model):
 
         :param records: The records to lock.
         """
+        if not records.ids:
+            return
         self._cr.execute(f'SELECT * FROM {records._table} WHERE id IN %s FOR UPDATE SKIP LOCKED', [tuple(records.ids)])
         available_ids = {r[0] for r in self._cr.fetchall()}
         if available_ids != set(records.ids):

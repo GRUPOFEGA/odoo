@@ -237,3 +237,20 @@ registry.category("web_tour.tours").add("InvoiceShipLaterAccessRight", {
             PaymentScreen.clickValidate(),
         ].flat(),
 });
+
+registry.category("web_tour.tours").add("CashRoundingPayment", {
+    test: true,
+    steps: () =>
+        [
+            Dialog.confirm("Open session"),
+            ProductScreen.addOrderline("Magnetic Board", "1"),
+            ProductScreen.clickPayButton(),
+
+            // Check the popup error is shown when selecting another payment method
+            PaymentScreen.totalIs("1.90"),
+            PaymentScreen.clickPaymentMethod("Cash"),
+            PaymentScreen.enterPaymentLineAmount("Cash", "1.94"),
+            PaymentScreen.clickValidate(),
+            Dialog.is(),
+        ].flat(),
+});

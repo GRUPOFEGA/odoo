@@ -8,6 +8,7 @@ import { _t } from "@web/core/l10n/translation";
 import { pyToJsLocale } from "@web/core/l10n/utils";
 import { user } from "@web/core/user";
 import { Deferred } from "@web/core/utils/concurrency";
+import { isMobileOS } from "@web/core/browser/feature_detection";
 
 /**
  * @typedef SuggestedRecipient
@@ -41,8 +42,8 @@ export class Thread extends Record {
     static insert(data) {
         return super.insert(...arguments);
     }
-    static new(data) {
-        const thread = super.new(data);
+    static new() {
+        const thread = super.new(...arguments);
         Record.onChange(thread, ["state"], () => {
             if (thread.state === "open" && !this.store.env.services.ui.isSmall) {
                 const cw = this.store.ChatWindow?.insert({ thread });
@@ -59,6 +60,10 @@ export class Thread extends Record {
     }
     static async getOrFetch(data) {
         return this.get(data);
+    }
+
+    static get onlineMemberStatuses() {
+        return ["away", "bot", "online"];
     }
 
     /** @type {number} */
@@ -176,8 +181,8 @@ export class Thread extends Record {
         if (this.model === "mail.box") {
             return this.counter;
         }
-        if (this.isChatChannel) {
-            return this.selfMember?.message_unread_counter || this.message_needaction_counter;
+        if (this.isChatChannel && this.selfMember?.message_unread_counter) {
+            return this.selfMember.totalUnreadMessageCounter;
         }
         return this.message_needaction_counter;
     }
@@ -538,9 +543,17 @@ export class Thread extends Record {
     offlineMembers = Record.many("ChannelMember", {
         /** @this {import("models").Thread} */
         compute() {
-            return this.channelMembers.filter((member) => member.persona?.im_status !== "online");
+            return this.channelMembers.filter(
+                (member) =>
+                    !this.store.Thread.onlineMemberStatuses.includes(member.persona?.im_status)
+            );
         },
-        sort: (m1, m2) => (m1.persona?.name < m2.persona?.name ? -1 : 1),
+        sort: (m1, m2) => {
+            if (m1.persona?.name === m2.persona?.name) {
+                return m1.id - m2.id;
+            }
+            return m1.persona?.name < m2.persona?.name ? -1 : 1;
+        },
     });
 
     get nonEmptyMessages() {
@@ -556,7 +569,7 @@ export class Thread extends Record {
     }
 
     get showUnreadBanner() {
-        return this.selfMember?.localMessageUnreadCounter > 0;
+        return !this.selfMember?.hideUnreadBanner && this.selfMember?.localMessageUnreadCounter > 0;
     }
 
     /** @type {undefined|number[]} */
@@ -606,7 +619,9 @@ export class Thread extends Record {
     onlineMembers = Record.many("ChannelMember", {
         /** @this {import("models").Thread} */
         compute() {
-            return this.channelMembers.filter((member) => member.persona.im_status === "online");
+            return this.channelMembers.filter((member) =>
+                this.store.Thread.onlineMemberStatuses.includes(member.persona.im_status)
+            );
         },
         sort(m1, m2) {
             return this.store.Thread.sortOnlineMembers(m1, m2);
@@ -915,42 +930,6 @@ export class Thread extends Record {
         );
     }
 
-    /**
-     * Handle the notification of a new message based on the notification setting of the user.
-     * Thread on mute:
-     * 1. No longer see the unread status: the bold text disappears and the channel name fades out.
-     * 2. Without sound + need action counter.
-
-     * Thread Notification Type:
-     * All messages:All messages sound + need action counter
-     * Mentions:Only mention sounds + need action counter
-     * Nothing: No sound + need action counter
-
-     * @param {import("models").Message} message
-     */
-    notifyMessageToUser(message) {
-        if (this.isCorrespondentOdooBot) {
-            return;
-        }
-        const channel_notifications =
-            this.custom_notifications || this.store.settings.channel_notifications;
-        if (
-            !this.mute_until_dt &&
-            !this.store.settings.mute_until_dt &&
-            (this.channel_type !== "channel" ||
-                (this.channel_type === "channel" &&
-                    (channel_notifications === "all" ||
-                        (channel_notifications === "mentions" &&
-                            message.recipients?.includes(this.store.self)))))
-        ) {
-            const chatWindow = this.store.ChatWindow.get({ thread: this });
-            if (!chatWindow) {
-                this.store.ChatWindow.insert({ thread: this }).fold();
-            }
-            this.store.env.services["mail.out_of_focus"].notify(message, this);
-        }
-    }
-
     /** @param {Object} [options] */
     open(options) {
         this.setAsDiscussThread();
@@ -962,7 +941,9 @@ export class Thread extends Record {
         );
         this.store.chatHub.opened.delete(cw);
         this.store.chatHub.opened.unshift(cw);
-        cw.focus();
+        if (!isMobileOS()) {
+            cw.focus();
+        }
         this.state = "open";
         cw.notifyState();
         return cw;
@@ -1120,6 +1101,14 @@ export class Thread extends Record {
                 : "channel";
         if (pushState) {
             router.pushState({ active_id: activeId });
+        }
+        if (
+            this.store.action_discuss_id &&
+            this.store.env.services.action?.currentController?.action.id ===
+                this.store.action_discuss_id
+        ) {
+            // Keep the action stack up to date (used by breadcrumbs).
+            this.store.env.services.action.currentController.action.context.active_id = activeId;
         }
     }
 

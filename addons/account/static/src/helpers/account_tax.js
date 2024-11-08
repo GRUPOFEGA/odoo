@@ -135,19 +135,22 @@ export const accountTaxHelpers = {
 
         for (const tax_data of batch.taxes) {
             if (batch._original_price_include) {
-                if (!special_mode) {
-                    for (const other_batch of batches_before) {
-                        add_extra_base(other_batch, tax_data, -1);
-                    }
-                } else if (special_mode === "total_excluded") {
-                    for (const other_batch of batches_after) {
-                        if (!other_batch.price_include) {
-                            add_extra_base(other_batch, tax_data, 1);
+                if (!special_mode || special_mode === "total_included") {
+                    if (!batch.include_base_amount) {
+                        for (const other_batch of batches_after) {
+                            if (other_batch._original_price_include) {
+                                add_extra_base(other_batch, tax_data, -1);
+                            }
                         }
                     }
-                } else if (special_mode === "total_included") {
                     for (const other_batch of batches_before) {
                         add_extra_base(other_batch, tax_data, -1);
+                    }
+                } else {  // special_mode === "total_excluded"
+                    for (const other_batch of batches_after) {
+                        if (!other_batch._original_price_include || batch.include_base_amount) {
+                            add_extra_base(other_batch, tax_data, 1);
+                        }
                     }
                 }
             } else if (!batch._original_price_include) {
@@ -157,11 +160,14 @@ export const accountTaxHelpers = {
                             add_extra_base(other_batch, tax_data, 1);
                         }
                     }
-                } else if (special_mode === "total_included") {
+                } else {  // special_mode === "total_included"
                     if (!batch.include_base_amount) {
-                        for (const other_batch of batches_before.concat(batches_after)) {
+                        for (const other_batch of batches_after) {
                             add_extra_base(other_batch, tax_data, -1);
                         }
+                    }
+                    for (const other_batch of batches_before) {
+                        add_extra_base(other_batch, tax_data, -1);
                     }
                 }
             }
@@ -291,6 +297,9 @@ export const accountTaxHelpers = {
             if (batch.include_base_amount) {
                 for (const next_batch of ascending_batches.toSpliced(0, i + 1)) {
                     for (const next_tax_data of next_batch.taxes) {
+                        if (!next_tax_data.is_base_affected) {
+                            continue;
+                        }
                         subsequent_tax_ids.push(next_tax_data.id);
                         if (include_caba_tags || next_tax_data.tax_exigibility !== "on_payment") {
                             for (const tag_id of next_tax_data[base_tags_field]) {
@@ -343,14 +352,29 @@ export const accountTaxHelpers = {
         price_unit,
         quantity,
         product_values,
-        { rounding_method = "round_per_line", precision_rounding = 0.01 } = {}
+        {
+            rounding_method = "round_per_line",
+            precision_rounding = null,
+            round_price_include = true,
+        } = {}
     ) {
+        if (rounding_method === "round_globally" && !round_price_include) {
+            precision_rounding = null;
+        } else if (!precision_rounding) {
+            precision_rounding = 0.01;
+        }
+        let raw_price = price_unit * quantity
+        if (precision_rounding) {
+            raw_price = roundPrecision(raw_price, precision_rounding);
+        }
         return {
             product: product_values,
             price_unit: price_unit,
+            raw_price: raw_price,
             quantity: quantity,
             rounding_method: rounding_method,
-            precision_rounding: rounding_method === "round_globally" ? null : precision_rounding,
+            precision_rounding: precision_rounding,
+            round_price_include: round_price_include,
         };
     },
 
@@ -367,9 +391,7 @@ export const accountTaxHelpers = {
             return evaluation_context.quantity * evaluation_context.quantity_multiplicator;
         }
 
-        let raw_base =
-            evaluation_context.quantity * evaluation_context.price_unit +
-            evaluation_context.extra_base;
+        let raw_base = evaluation_context.raw_price + evaluation_context.extra_base;
         if (
             "incl_base_multiplicator" in evaluation_context &&
             ((price_include && !special_mode) || special_mode === "total_included")
@@ -392,9 +414,7 @@ export const accountTaxHelpers = {
         const amount_type = tax_data.amount_type;
         const total_tax_amount = evaluation_context.total_tax_amount;
         const special_mode = evaluation_context.special_mode;
-        const raw_base =
-            evaluation_context.quantity * evaluation_context.price_unit +
-            evaluation_context.extra_base;
+        const raw_base = evaluation_context.raw_price + evaluation_context.extra_base;
 
         if (price_include) {
             const base = special_mode === "total_excluded" ? raw_base : raw_base - total_tax_amount;
@@ -427,10 +447,12 @@ export const accountTaxHelpers = {
         const eval_order_indexes = taxes_computation.eval_order_indexes;
         const rounding_method = evaluation_context.rounding_method;
         const prec_rounding = evaluation_context.precision_rounding;
+        const round_price_include = evaluation_context.round_price_include;
         let eval_taxes_data = taxes_data.map((tax_data) => Object.assign({}, tax_data));
         const skipped = new Set();
         for (const [quid, index] of eval_order_indexes) {
             const tax_data = eval_taxes_data[index];
+            const special_mode = tax_data.evaluation_context.special_mode;
             if (quid === "tax") {
                 let extra_base = 0.0;
                 for (const [extra_base_sign, extra_base_index] of tax_data.extra_base_for_tax) {
@@ -448,7 +470,10 @@ export const accountTaxHelpers = {
                 }
                 tax_data.tax_amount = tax_amount;
                 tax_data.tax_amount_factorized = tax_data.tax_amount * tax_data._factor;
-                if (rounding_method === "round_per_line") {
+                if (
+                    rounding_method === "round_per_line" ||
+                    (!special_mode && tax_data.price_include && round_price_include)
+                ) {
                     tax_data.tax_amount_factorized = roundPrecision(
                         tax_data.tax_amount_factorized,
                         prec_rounding
@@ -473,7 +498,10 @@ export const accountTaxHelpers = {
                         total_tax_amount: total_tax_amount,
                     })
                 );
-                if (rounding_method === "round_per_line") {
+                if (
+                    rounding_method === "round_per_line" ||
+                    (!special_mode && tax_data.price_include && round_price_include)
+                ) {
                     tax_data.base = roundPrecision(tax_data.base, prec_rounding);
                     tax_data.display_base = roundPrecision(tax_data.display_base, prec_rounding);
                 }
@@ -494,8 +522,7 @@ export const accountTaxHelpers = {
             }
             total_included = total_excluded + tax_amount;
         } else {
-            total_excluded = total_included =
-                evaluation_context.quantity * evaluation_context.price_unit;
+            total_excluded = total_included = evaluation_context.raw_price;
             if (rounding_method === "round_per_line") {
                 total_excluded = total_included = roundPrecision(total_excluded, prec_rounding);
             }
@@ -533,7 +560,7 @@ export const accountTaxHelpers = {
             price_unit,
             1.0,
             product_values,
-            { rounding_method: "round_globally" }
+            { rounding_method: "round_globally", round_price_include: false }
         );
         taxes_computation = this.eval_taxes_computation(taxes_computation, evaluation_context);
         price_unit = taxes_computation.total_excluded;
@@ -545,7 +572,7 @@ export const accountTaxHelpers = {
             price_unit,
             1.0,
             product_values,
-            { rounding_method: "round_globally" }
+            { rounding_method: "round_globally", round_price_include: false }
         );
         taxes_computation = this.eval_taxes_computation(taxes_computation, evaluation_context);
         let delta = 0.0;
@@ -564,10 +591,10 @@ export const accountTaxHelpers = {
     computeSingleLineTaxes(
         taxes_data,
         evaluation_context,
-        { force_price_include = false, is_refund = false, include_caba_tags = false } = {}
+        { special_mode = false, is_refund = false, include_caba_tags = false } = {}
     ) {
         const taxes_computation = this.prepare_taxes_computation(taxes_data, {
-            force_price_include: force_price_include,
+            special_mode: special_mode,
             is_refund: is_refund,
             include_caba_tags: include_caba_tags,
         });

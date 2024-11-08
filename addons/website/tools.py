@@ -62,6 +62,7 @@ def MockRequest(
         cr=env.cr,
         uid=env.uid,
         context=env.context,
+        cookies=cookies,
         lang=env['res.lang']._get_data(code=lang_code),
         website=website,
         render=lambda *a, **kw: '<MockResponse>',
@@ -93,7 +94,8 @@ def MockRequest(
         match.side_effect = NotFound
 
     def update_context(**overrides):
-        request.context = dict(request.context, **overrides)
+        request.env = request.env(context=dict(request.context, **overrides))
+        request.context = request.env.context
 
     request.update_context = update_context
 

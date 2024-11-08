@@ -5,7 +5,7 @@ import {
     queryAllRects,
     queryAllTexts,
     queryFirst,
-    queryLast,
+    queryOne,
     queryRect,
 } from "@odoo/hoot-dom";
 import { Deferred, advanceTime, animationFrame, mockDate, mockTimeZone } from "@odoo/hoot-mock";
@@ -38,6 +38,7 @@ import {
     navigate,
     pickDate,
     removeFilter,
+    resizeEventToDate,
     resizeEventToTime,
     selectAllDayRange,
     selectDateRange,
@@ -886,7 +887,7 @@ test(`week numbering`, async () => {
         type: "calendar",
         arch: `<calendar date_start="start" date_stop="stop" mode="week"/>`,
     });
-    expect(`.fc-timegrid-axis-cushion`).toHaveText("Week 50");
+    expect(`.fc-timegrid-axis-cushion:eq(0)`).toHaveText("Week 50");
 });
 
 test(`render popover`, async () => {
@@ -2504,7 +2505,7 @@ test(`set event as all day when field is date`, async () => {
     });
 
     await toggleFilter("attendee_ids", 1);
-    expect(`.fc-daygrid-day-events .fc-event`).toHaveCount(1);
+    expect(`.fc-daygrid-body .fc-event`).toHaveCount(1);
 
     await clickEvent(1);
     expect(`.o_cw_popover .list-group-item:eq(0)`).toHaveText("December 14, 2016");
@@ -2518,7 +2519,18 @@ test(`set event as all day when field is date (without all_day mapping)`, async 
         type: "calendar",
         arch: `<calendar date_start="start_date" mode="week"/>`,
     });
-    expect(`.fc-daygrid-day-events .fc-event`).toHaveCount(1);
+    expect(`.fc-daygrid-body .fc-event`).toHaveCount(1);
+});
+
+test(`set event as all day when field is datetime (without all_day mapping)`, async () => {
+    await mountView({
+        resModel: "event",
+        type: "calendar",
+        arch: `<calendar date_start="start" date_stop="stop" mode="week"/>`,
+    });
+    expect(`.fc-daygrid-body .fc-event`).toHaveCount(1, {
+        message: "should be one event in the all day row",
+    });
 });
 
 test(`quickcreate avoid double event creation`, async () => {
@@ -2539,7 +2551,7 @@ test(`quickcreate avoid double event creation`, async () => {
     await contains(`.modal-body input`).edit("new event in quick create", { confirm: false });
 
     // Simulate ENTER pressed on Create button (after a TAB)
-    press("Enter");
+    await press("Enter");
     click(`.o-calendar-quick-create--create-btn`);
     await animationFrame();
 
@@ -2950,11 +2962,12 @@ test(`Monday week start week mode`, async () => {
         arch: `<calendar date_start="start" date_stop="stop" mode="week"/>`,
     });
     expect.verifySteps(["event.search_read"]);
+    expect(`.fc-timeGridWeek-view .fc-daygrid-body`).toHaveCount(1);
     expect(`.fc-col-header-cell .o_cw_day_name:eq(0)`).toHaveText("MON");
     expect(`.fc-col-header-cell .o_cw_day_number:eq(0)`).toHaveText("9");
     expect(`.fc-col-header-cell .o_cw_day_name:eq(-1)`).toHaveText("SUN");
     expect(`.fc-col-header-cell .o_cw_day_number:eq(-1)`).toHaveText("15");
-    expect(`.fc-timegrid-axis-cushion`).toHaveText("Week 37");
+    expect(`.fc-timegrid-axis-cushion:eq(0)`).toHaveText("Week 37");
 });
 
 test(`Saturday week start week mode`, async () => {
@@ -2975,11 +2988,12 @@ test(`Saturday week start week mode`, async () => {
         arch: `<calendar date_start="start" date_stop="stop" mode="week"/>`,
     });
     expect.verifySteps(["event.search_read"]);
+    expect(`.fc-timeGridWeek-view .fc-daygrid-body`).toHaveCount(1);
     expect(`.fc-col-header-cell .o_cw_day_name:eq(0)`).toHaveText("SAT");
     expect(`.fc-col-header-cell .o_cw_day_number:eq(0)`).toHaveText("7");
     expect(`.fc-col-header-cell .o_cw_day_name:eq(-1)`).toHaveText("FRI");
     expect(`.fc-col-header-cell .o_cw_day_number:eq(-1)`).toHaveText("13");
-    expect(`.fc-timegrid-axis-cushion`).toHaveText("Week 37");
+    expect(`.fc-timegrid-axis-cushion:eq(0)`).toHaveText("Week 37");
 });
 
 test(`Monday week start year mode`, async () => {
@@ -3011,7 +3025,7 @@ test(`Monday week start year mode`, async () => {
     expect(queryFirst(`.fc-daygrid-day-top`, { root: weekRow })).toHaveText("9", {
         message: "The first day of the week should be Monday the 9th",
     });
-    expect(queryLast(`.fc-daygrid-day-top`, { root: weekRow })).toHaveText("15", {
+    expect(queryOne(`.fc-daygrid-day-top:last`, { root: weekRow })).toHaveText("15", {
         message: "The last day of the week should be Sunday the 15th",
     });
     expect(queryFirst(`.fc-daygrid-week-number`, { root: weekRow })).toHaveText("37");
@@ -3047,7 +3061,7 @@ test(`Sunday week start year mode`, async () => {
     expect(queryFirst(`.fc-daygrid-day-top`, { root: weekRow })).toHaveText("15", {
         message: "The first day of the week should be Sunday the 15th",
     });
-    expect(queryLast(`.fc-daygrid-day-top`, { root: weekRow })).toHaveText("21", {
+    expect(queryOne(`.fc-daygrid-day-top:last`, { root: weekRow })).toHaveText("21", {
         message: "The last day of the week should be Saturday the 21st",
     });
     expect(queryFirst(`.fc-daygrid-week-number`, { root: weekRow })).toHaveText("38");
@@ -3138,6 +3152,46 @@ test(`attempt to create multiples events and the same day and check the ordering
     });
     expect(`.o_calendar_renderer .fc-view`).toHaveCount(1);
     expect(queryAllTexts`.o_event_title`).toEqual(["First event", "Second event", "Third event"]);
+});
+
+test(`Resizing Pill of Multiple Days(Allday)`, async () => {
+    onRpc("web_save", ({ args }) => {
+        expect.step("web_save");
+        expect(args[1]).toEqual({
+            is_all_day: true,
+            name: "foobar",
+            start: "2016-12-13 00:00:00",
+            start_date: false,
+            stop: "2016-12-14 00:00:00",
+            stop_date: false,
+        });
+    });
+
+    onRpc("write", ({ args }) => {
+        expect.step("write");
+        expect(args[1]).toEqual({
+            is_all_day: true,
+            start: "2016-12-13",
+            stop: "2016-12-16",
+        });
+    });
+
+    await mountView({
+        resModel: "event",
+        type: "calendar",
+        arch: `<calendar event_open_popup="1" quick_create="0" date_start="start" date_stop="stop" all_day="is_all_day" mode="month"/>`,
+    });
+
+    await selectDateRange("2016-12-13", "2016-12-14");
+    await contains(`.modal .o_field_widget[name="name"] input`).edit("foobar", { confirm: false });
+    await contains(`.modal .o_form_button_save`).click();
+    expect.verifySteps(["web_save"]);
+
+    await resizeEventToDate(8, "2016-12-16");
+    const event = queryFirst`.o_event[data-event-id="8"]`;
+    expect(event).toHaveText("foobar");
+    expect(event.closest(".fc-daygrid-day")).not.toBeEmpty();
+    expect.verifySteps(["write"]);
 });
 
 test(`create event and resize to next day (24h) on week mode`, async () => {
@@ -3922,12 +3976,12 @@ test(`scroll to current hour when clicking on today`, async () => {
         arch: `<calendar event_open_popup="1" date_start="start" date_stop="stop" all_day="is_all_day" mode="week"/>`,
     });
     // Default scroll time should be 6am no matter the current hour
-    expect(queryLast(".fc-scroller").scrollTop).toBeWithin(210, 230);
+    expect(queryOne(".fc-scroller:last").scrollTop).toBeWithin(210, 230);
     await contains(".o_calendar_button_today").click();
-    expect(queryLast(".fc-scroller").scrollTop).toBe(0);
+    expect(queryOne(".fc-scroller:last").scrollTop).toBe(0);
     mockDate("2016-12-12T20:00:00", 1);
     await contains(".o_calendar_button_today").click();
-    expect(queryLast(".fc-scroller").scrollTop).toBeWithin(360, 380);
+    expect(queryOne(".fc-scroller:last").scrollTop).toBeWithin(360, 380);
 });
 
 test("save selected date during view switching", async () => {
@@ -3963,5 +4017,30 @@ test("save selected date during view switching", async () => {
     const weekNumber = await queryFirst(`th .fc-timegrid-axis-cushion`).textContent;
     await contains(`.o_cp_switch_buttons .o_list`).click();
     await getService("action").switchView("calendar");
-    expect(`th .fc-timegrid-axis-cushion`).toHaveText(weekNumber);
+    expect(`th .fc-timegrid-axis-cushion:eq(0)`).toHaveText(weekNumber);
+});
+
+test("update time while drag and drop on month mode", async () => {
+    await mountView({
+        resModel: "event",
+        type: "calendar",
+        arch: `
+            <calendar date_start="start" date_stop="stop" mode="month" event_open_popup="1" quick_create="0">
+                <field name="name"/>
+                <field name="partner_id"/>
+            </calendar>
+        `,
+    });
+
+    await clickDate("2016-12-20");
+    await contains(".modal-body .o_field_widget[name=name] input").edit("An event");
+    await contains(".modal-body .o_field_widget[name=start] input").edit("2016-12-20 08:00:00");
+    await contains(".modal-body .o_field_widget[name=stop] input").edit("2016-12-23 10:00:00");
+    await contains(".modal .o_form_button_save").click();
+    await moveEventToDate(8, "2016-12-27");
+    await clickEvent(8);
+    await contains(".o_cw_popover .o_cw_popover_edit").click();
+
+    expect(".o_field_widget[name='start'] input").toHaveValue("12/26/2016 08:00:00");
+    expect(".o_field_widget[name='stop'] input").toHaveValue("12/29/2016 10:00:00");
 });

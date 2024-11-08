@@ -33,12 +33,14 @@ export class BaseProductAttribute extends Component {
                 return val.name;
             })
             .join(", ");
+        const hasCustom = attribute_value_ids.some((val) => val.is_custom);
 
         return {
             value,
             valueIds,
             custom_value: this.state.custom_value,
             extra,
+            hasCustom,
         };
     }
 
@@ -130,15 +132,17 @@ export class ProductConfiguratorPopup extends Component {
         var price_extra = 0.0;
 
         this.state.payload.forEach((attribute_component) => {
-            const { valueIds, extra, custom_value } = attribute_component.getValue();
+            const { valueIds, extra, custom_value, hasCustom } = attribute_component.getValue();
             attribute_value_ids.push(valueIds);
 
-            if (custom_value) {
+            if (hasCustom) {
                 // for custom values, it will never be a multiple attribute
                 attribute_custom_values[valueIds[0]] = custom_value;
             }
-
-            price_extra += extra;
+            const attr = this.pos.data.models["product.template.attribute.value"].get(valueIds[0]);
+            if (attr && attr.attribute_id.create_variant !== "always") {
+                price_extra += extra;
+            }
         });
 
         attribute_value_ids = attribute_value_ids.flat();
@@ -183,5 +187,22 @@ export class ProductConfiguratorPopup extends Component {
     confirm() {
         this.props.getPayload(this.computePayload());
         this.props.close();
+    }
+    isArchivedCombination() {
+        const variantAttributeValueIds = this.getVariantAttributeValueIds();
+        if (variantAttributeValueIds.length === 0) {
+            return false;
+        }
+        return this.props.product._isArchivedCombination(variantAttributeValueIds);
+    }
+    getVariantAttributeValueIds() {
+        const attribute_value_ids = [];
+        this.state.payload.forEach((att_component) => {
+            const { valueIds } = att_component.getValue();
+            if (att_component.attributeLine.attribute_id.create_variant === "always") {
+                attribute_value_ids.push(valueIds);
+            }
+        });
+        return attribute_value_ids.flat();
     }
 }

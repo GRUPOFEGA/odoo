@@ -23,6 +23,12 @@ $input-border-color: $gray-400;
             width: if($-list, 100%, 50%);
         }
 
+        @if ($-list == false) {
+            [data-ppr="3"] td.oe_product {
+                width: 100%;
+            }
+        }
+
         .modal-dialog {
             table, tbody, tr, td {
                 display: revert;
@@ -409,12 +415,6 @@ a.no-decoration {
         max-height: 90vh;
         display: flex;
         align-items: center;
-        @include media-breakpoint-down(md) {
-            height: 300px;
-        }
-        @include media-breakpoint-down(sm) {
-            height: 200px;
-        }
         .carousel-inner {
             img {
                 object-fit: contain;

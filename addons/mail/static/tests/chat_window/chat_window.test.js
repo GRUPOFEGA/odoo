@@ -344,6 +344,45 @@ test("chat window: close on ESCAPE", async () => {
     await assertSteps(["channel_fold/closed"]);
 });
 
+test("chat window: close on ESCAPE (multi)", async () => {
+    const pyEnv = await startServer();
+    pyEnv["discuss.channel"].create(
+        Array(4)
+            .keys()
+            .map((i) => ({
+                name: `channel_${i}`,
+                channel_member_ids: [
+                    Command.create({ fold_state: "open", partner_id: serverState.partnerId }),
+                ],
+            }))
+    );
+    patchUiSize({ width: 1920 });
+    await start();
+    await contains(".o-mail-ChatWindow", { count: 4 }); // expected order: 3, 2, 1, 0
+    await contains(".o-mail-ChatWindow:eq(0)", { text: "channel_3" });
+    await contains(".o-mail-ChatWindow:eq(1)", { text: "channel_2" });
+    await contains(".o-mail-ChatWindow:eq(2)", { text: "channel_1" });
+    await contains(".o-mail-ChatWindow:eq(3)", { text: "channel_0" });
+    await focus(".o-mail-Composer-input:eq(3)");
+    triggerHotkey("Escape");
+    await contains(".o-mail-ChatWindow", { count: 3 });
+    await contains(".o-mail-ChatWindow:eq(0)", { text: "channel_3" });
+    await contains(".o-mail-ChatWindow:eq(1)", { text: "channel_2" });
+    await contains(".o-mail-ChatWindow:eq(2)", { text: "channel_1" });
+    await contains(".o-mail-ChatWindow:eq(2) .o-mail-Composer.o-focused");
+    await focus(".o-mail-Composer-input:eq(0)");
+    triggerHotkey("Escape");
+    await contains(".o-mail-ChatWindow", { count: 2 });
+    await contains(".o-mail-ChatWindow:eq(0)", { text: "channel_2" });
+    await contains(".o-mail-ChatWindow:eq(1)", { text: "channel_1" });
+    await contains(".o-mail-ChatWindow:eq(0) .o-mail-Composer.o-focused");
+    triggerHotkey("Escape");
+    await contains(".o-mail-ChatWindow", { count: 1 });
+    await contains(".o-mail-ChatWindow", { text: "channel_1" });
+    triggerHotkey("Escape");
+    await contains(".o-mail-ChatWindow", { count: 0 });
+});
+
 test("Close composer suggestions in chat window with ESCAPE does not also close the chat window", async () => {
     const pyEnv = await startServer();
     const partnerId = pyEnv["res.partner"].create({
@@ -377,6 +416,42 @@ test("Close emoji picker in chat window with ESCAPE does not also close the chat
     triggerHotkey("Escape");
     await contains(".o-EmojiPicker", { count: 0 });
     await contains(".o-mail-ChatWindow");
+});
+
+test("Close active thread action in chatwindow on ESCAPE", async () => {
+    const pyEnv = await startServer();
+    pyEnv["discuss.channel"].create({
+        name: "General",
+        channel_member_ids: [
+            Command.create({ partner_id: serverState.partnerId, fold_state: "open" }),
+        ],
+    });
+    await start();
+    await contains(".o-mail-ChatWindow");
+    await click(".o-mail-ChatWindow-command", { text: "General" });
+    await click(".o-dropdown-item", { text: "Add Users" });
+    await contains(".o-discuss-ChannelInvitation");
+    triggerHotkey("Escape");
+    await contains(".o-discuss-ChannelInvitation", { count: 0 });
+    await contains(".o-mail-ChatWindow");
+});
+
+test("ESC cancels thread rename", async () => {
+    const pyEnv = await startServer();
+    pyEnv["discuss.channel"].create({
+        name: "General",
+        channel_member_ids: [
+            Command.create({ partner_id: serverState.partnerId, fold_state: "open" }),
+        ],
+    });
+    await start();
+    await click(".o-mail-ChatWindow-command", { text: "General" });
+    await click(".o-dropdown-item", { text: "Rename" });
+    await contains(".o-mail-AutoresizeInput.o-focused[title='General']");
+    await insertText(".o-mail-AutoresizeInput", "New", { replace: true });
+    triggerHotkey("Escape");
+    await contains(".o-mail-AutoresizeInput.o-focused", { count: 0 });
+    await contains(".o-mail-ChatWindow-command", { text: "General" });
 });
 
 test("open 2 different chat windows: enough screen width [REQUIRE FOCUS]", async () => {
