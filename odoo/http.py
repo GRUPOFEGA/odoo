@@ -1980,20 +1980,16 @@ class Request:
                 else 'rw'
             )
 
-            with contextlib.closing(self.registry.cursor(readonly=readonly_cr)) as cr:
-                self.env = self.env(cr=cr)
-                try:
-                    return service_model.retrying(func, env=self.env)
-                except psycopg2.errors.ReadOnlySqlTransaction as exc:
-                    _logger.warning("%s, retrying with a read/write cursor", exc.args[0].rstrip(), exc_info=True)
-                    continue
-                except Exception as exc:
-                    if isinstance(exc, HTTPException) and exc.code is None:
-                        raise  # bubble up to odoo.http.Application.__call__
-                    if 'werkzeug' in config['dev_mode'] and self.dispatcher.routing_type != 'json':
-                        raise  # bubble up to werkzeug.debug.DebuggedApplication
-                    exc.error_response = self.registry['ir.http']._handle_error(exc)
-                    raise
+        with contextlib.closing(self.registry.cursor()) as cr:
+            self.env = odoo.api.Environment(cr, self.session.uid, self.session.context)
+            threading.current_thread().uid = self.env.uid
+            try:
+                return service_model.retrying(self._serve_ir_http, self.env)
+            except Exception as exc:
+                if isinstance(exc, HTTPException) and exc.code is None:
+                    raise  # bubble up to odoo.http.Application.__call__
+                exc.error_response = self.registry['ir.http']._handle_error(exc)
+                raise
 
 
 # =========================================================
