@@ -1983,7 +1983,6 @@ class Dispatcher(ABC):
         Transform the exception into a valid HTTP response. Called upon
         any exception while serving a request.
         """
-return service_model.retrying(func, env=self.env)
 
 class HttpDispatcher(Dispatcher):
     routing_type = 'http'
