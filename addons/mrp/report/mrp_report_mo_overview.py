@@ -72,10 +72,7 @@ class ReportMoOverview(models.AbstractModel):
 
 
 
-    def _get_unit_cost(self, move):
-        if not move:
-            return 0.0
-        return move.product_id.uom_id._compute_price(move.product_id.standard_price, move.product_uom)
+    
 
     def _format_state(self, record, components=False):
         """ For MOs, provide a custom state based on the demand vs quantities available for components.
