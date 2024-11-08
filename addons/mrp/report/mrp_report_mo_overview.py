@@ -348,48 +348,7 @@ class ReportMoOverview(models.AbstractModel):
             'details': operations,
         }
 
-    def _get_byproducts_data(self, production, current_mo_cost, current_real_cost, level=0, current_index=False):
-        currency = (production.company_id or self.env.company).currency_id
-        byproducts = []
-        byproducts_cost_portion = 0
-        total_mo_cost = 0
-        total_real_cost = 0
-        for index, move_bp in enumerate(production.move_byproduct_ids):
-            product = move_bp.product_id
-            cost_share = move_bp.cost_share / 100
-            byproducts_cost_portion += cost_share
-            mo_cost = current_mo_cost * cost_share
-            real_cost = current_real_cost * cost_share
-            total_mo_cost += mo_cost
-            total_real_cost += real_cost
-            byproducts.append({
-                'level': level,
-                'index': f"{current_index}B{index}",
-                'model': product._name,
-                'id': product.id,
-                'name': product.display_name,
-                'quantity': move_bp.product_uom_qty if move_bp.state != 'done' else move_bp.quantity,
-                'uom_name': move_bp.product_uom.display_name,
-                'uom_precision': self._get_uom_precision(move_bp.product_uom.rounding),
-                'unit_cost': self._get_unit_cost(move_bp),
-                'mo_cost': currency.round(mo_cost),
-                'mo_cost_decorator': self._get_comparison_decorator(real_cost, mo_cost, currency.rounding),
-                'real_cost': currency.round(real_cost),
-                'currency_id': currency.id,
-                'currency': currency,
-            })
 
-        return float_round(1 - byproducts_cost_portion, precision_rounding=0.0001), {
-            'summary': {
-                'index': f"{current_index}B",
-                'mo_cost': currency.round(total_mo_cost),
-                'mo_cost_decorator': self._get_comparison_decorator(total_real_cost, total_mo_cost, currency.rounding),
-                'real_cost': currency.round(total_real_cost),
-                'currency_id': currency.id,
-                'currency': currency,
-            },
-            'details': byproducts,
-        }
 
     def _compute_cost_sums(self, components, operations=False):
         total_mo_cost = total_real_cost = 0
