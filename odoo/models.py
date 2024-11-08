@@ -5357,23 +5357,7 @@ class BaseModel(metaclass=MetaModel):
             coorder = comodel._order
             sql_field = self._field_to_sql(alias, field_name, query)
 
-            if coorder == 'id':
-                return SQL("%s %s %s", sql_field, direction, nulls)
 
-            # instead of ordering by the field's raw value, use the comodel's
-            # order on many2one values
-            terms = []
-            if nulls.code == 'NULLS FIRST':
-                terms.append(SQL("%s IS NOT NULL", self._field_to_sql(alias, field_name, query)))
-            elif nulls.code == 'NULLS LAST':
-                terms.append(SQL("%s IS NULL", self._field_to_sql(alias, field_name, query)))
-
-            # LEFT JOIN the comodel table, in order to include NULL values, too
-            coalias = query.make_alias(alias, field_name)
-            query.add_join('LEFT JOIN', coalias, comodel._table, SQL(
-                "%s = %s",
-                sql_field,
-                SQL.identifier(coalias, 'id'),
             ))
 
             # delegate the order to the comodel
