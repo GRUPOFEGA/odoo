@@ -69,27 +69,6 @@ class ReportMoOverview(models.AbstractModel):
             'show_uom': self.env.user.has_group('uom.group_uom'),
         }
 
-    def _get_report_data(self, production_id):
-        production = self.env['mrp.production'].browse(production_id)
-        # Necessary to fetch the right quantities for multi-warehouse
-        production = production.with_context(warehouse_id=production.warehouse_id.id)
-
-        components = self._get_components_data(production, level=1, current_index='')
-        operations = self._get_operations_data(production, level=1, current_index='')
-        initial_mo_cost, initial_real_cost = self._compute_cost_sums(components, operations)
-        remaining_cost_share, byproducts = self._get_byproducts_data(production, initial_mo_cost, initial_real_cost, level=1, current_index='')
-        summary = self._get_mo_summary(production, components, initial_mo_cost, initial_real_cost, remaining_cost_share)
-        extra_lines = self._get_report_extra_lines(summary, components, operations, production.state == 'done')
-        return {
-            'id': production.id,
-            'name': production.display_name,
-            'summary': summary,
-            'components': components,
-            'operations': operations,
-            'byproducts': byproducts,
-            'extras': extra_lines,
-            'cost_breakdown': self._get_cost_breakdown_data(production, extra_lines, remaining_cost_share),
-        }
 
     def _get_report_extra_lines(self, summary, components, operations, production_done=False):
         currency = summary.get('currency', self.env.company.currency_id)
